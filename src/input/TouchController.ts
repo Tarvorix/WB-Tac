@@ -1,6 +1,7 @@
-import { Scene, VirtualJoystick, Vector3 } from '@babylonjs/core';
+import { Scene } from '@babylonjs/core';
 import {
   AdvancedDynamicTexture,
+  Ellipse,
   Button,
   Control
 } from '@babylonjs/gui';
@@ -15,105 +16,190 @@ export interface InputState {
 
 export class TouchController {
   private scene: Scene;
+  private canvas: HTMLCanvasElement;
   private inputState: InputState;
   private guiTexture: AdvancedDynamicTexture;
 
-  // Built-in Babylon.js VirtualJoystick
-  private leftJoystick: VirtualJoystick;
+  // Joystick visual elements
+  private joystickOuter: Ellipse;
+  private joystickInner: Ellipse;
+
+  // Joystick touch state
+  private joystickTouchId: number = -1;
+  private joystickStartX: number = 0;
+  private joystickStartY: number = 0;
 
   private actionButtons: Map<InputActionType, Button> = new Map();
 
   // Responsive sizes
+  private joystickOuterSize: number = GAME_CONSTANTS.JOYSTICK_OUTER_SIZE;
+  private joystickInnerSize: number = GAME_CONSTANTS.JOYSTICK_INNER_SIZE;
   private actionButtonSize: number = GAME_CONSTANTS.ACTION_BUTTON_SIZE;
   private actionButtonSmallSize: number = GAME_CONSTANTS.ACTION_BUTTON_SMALL_SIZE;
   private isMobile: boolean = false;
 
+  // Bound handlers for cleanup
+  private onTouchStart: (e: TouchEvent) => void;
+  private onTouchMove: (e: TouchEvent) => void;
+  private onTouchEnd: (e: TouchEvent) => void;
+
   constructor(scene: Scene, canvas: HTMLCanvasElement, inputState: InputState) {
     this.scene = scene;
+    this.canvas = canvas;
     this.inputState = inputState;
 
-    // Calculate responsive sizes
     this.calculateResponsiveSizes();
 
-    // Create the built-in VirtualJoystick (left side = true)
-    // The joystick creates its own canvas overlay
-    this.leftJoystick = new VirtualJoystick(true);
-
-    // Configure joystick - limit to container area for better control
-    this.leftJoystick.limitToContainer = true;
-
-    // Set z-index so GUI buttons can still be clicked
-    // The joystick canvas covers the whole screen but we'll handle button clicks separately
-    if (VirtualJoystick.Canvas) {
-      VirtualJoystick.Canvas.style.zIndex = '4';
-    }
-
-    // Create GUI for action buttons (right side)
-    // GUI renders on top of joystick canvas
+    // Create GUI
     this.guiTexture = AdvancedDynamicTexture.CreateFullscreenUI('touchUI', true, this.scene);
+
+    // Create joystick visuals
+    this.joystickOuter = this.createJoystickOuter();
+    this.joystickInner = this.createJoystickInner();
+
+    // Create action buttons
     this.createActionButtons();
 
-    // Update input state from joystick every frame
-    this.scene.registerBeforeRender(() => {
-      this.updateFromJoystick();
-    });
+    // Setup window-level touch events (most reliable for iOS Safari)
+    this.onTouchStart = this.handleTouchStart.bind(this);
+    this.onTouchMove = this.handleTouchMove.bind(this);
+    this.onTouchEnd = this.handleTouchEnd.bind(this);
+
+    // Use window events with capture phase for reliable iOS handling
+    window.addEventListener('touchstart', this.onTouchStart, { passive: false, capture: true });
+    window.addEventListener('touchmove', this.onTouchMove, { passive: false, capture: true });
+    window.addEventListener('touchend', this.onTouchEnd, { passive: false, capture: true });
+    window.addEventListener('touchcancel', this.onTouchEnd, { passive: false, capture: true });
   }
 
   private calculateResponsiveSizes(): void {
-    const screenWidth = Math.min(
-      window.innerWidth || 0,
-      document.documentElement.clientWidth || 0,
-      screen.width || 0
-    ) || window.innerWidth;
-
+    const screenWidth = window.innerWidth || document.documentElement.clientWidth || 375;
     const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     this.isMobile = hasTouch && screenWidth < GAME_CONSTANTS.MOBILE_WIDTH_THRESHOLD;
 
     if (this.isMobile) {
+      this.joystickOuterSize = GAME_CONSTANTS.JOYSTICK_OUTER_SIZE_MOBILE;
+      this.joystickInnerSize = GAME_CONSTANTS.JOYSTICK_INNER_SIZE_MOBILE;
       this.actionButtonSize = GAME_CONSTANTS.ACTION_BUTTON_SIZE_MOBILE;
       this.actionButtonSmallSize = GAME_CONSTANTS.ACTION_BUTTON_SMALL_SIZE_MOBILE;
-    } else {
-      this.actionButtonSize = GAME_CONSTANTS.ACTION_BUTTON_SIZE;
-      this.actionButtonSmallSize = GAME_CONSTANTS.ACTION_BUTTON_SMALL_SIZE;
     }
   }
 
-  private updateFromJoystick(): void {
-    if (this.leftJoystick.pressed) {
-      // deltaPosition is a Vector3 with pixel offsets from touch start
-      // x = horizontal (left/right), y = vertical (up/down), z = unused
-      const delta: Vector3 = this.leftJoystick.deltaPosition;
+  private createJoystickOuter(): Ellipse {
+    const outer = new Ellipse('joystickOuter');
+    outer.width = `${this.joystickOuterSize}px`;
+    outer.height = `${this.joystickOuterSize}px`;
+    outer.color = 'white';
+    outer.thickness = 2;
+    outer.background = COLORS.JOYSTICK_OUTER;
+    outer.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    outer.verticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
+    outer.left = `${this.isMobile ? 20 : 50}px`;
+    outer.top = `${this.isMobile ? -40 : -100}px`;
+    outer.isHitTestVisible = false; // Don't block touch events
+    this.guiTexture.addControl(outer);
+    return outer;
+  }
 
-      // Normalize based on typical joystick radius (about 40-60 pixels)
-      // Using 40 as the "full tilt" distance
-      const maxDistance = 40;
+  private createJoystickInner(): Ellipse {
+    const inner = new Ellipse('joystickInner');
+    inner.width = `${this.joystickInnerSize}px`;
+    inner.height = `${this.joystickInnerSize}px`;
+    inner.color = 'white';
+    inner.thickness = 2;
+    inner.background = COLORS.JOYSTICK_INNER;
+    inner.isHitTestVisible = false;
+    this.joystickOuter.addControl(inner);
+    return inner;
+  }
 
-      // Clamp and normalize to -1 to 1 range
-      let normalizedX = delta.x / maxDistance;
-      let normalizedY = delta.y / maxDistance;
+  private handleTouchStart(e: TouchEvent): void {
+    const rect = this.canvas.getBoundingClientRect();
 
-      // Clamp to -1, 1
-      normalizedX = Math.max(-1, Math.min(1, normalizedX));
-      normalizedY = Math.max(-1, Math.min(1, normalizedY));
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
 
-      // Apply dead zone
-      if (Math.abs(normalizedX) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) {
-        normalizedX = 0;
+      // Check if touch is within canvas bounds
+      if (x < 0 || x > rect.width || y < 0 || y > rect.height) {
+        continue;
       }
-      if (Math.abs(normalizedY) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) {
-        normalizedY = 0;
-      }
 
-      // Update input state
-      // X = left/right rotation
-      // Y = forward/backward (invert because screen Y is down, game Y is forward)
-      this.inputState.movement.x = normalizedX;
-      this.inputState.movement.y = -normalizedY;
-    } else {
-      // Joystick released - stop movement
-      this.inputState.movement.x = 0;
-      this.inputState.movement.y = 0;
+      // Left 40% of screen = joystick area (avoid conflict with buttons)
+      if (x < rect.width * 0.4 && this.joystickTouchId === -1) {
+        e.preventDefault();
+        this.joystickTouchId = touch.identifier;
+        this.joystickStartX = touch.clientX;
+        this.joystickStartY = touch.clientY;
+        this.updateJoystick(touch.clientX, touch.clientY);
+      }
     }
+  }
+
+  private handleTouchMove(e: TouchEvent): void {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+
+      if (touch.identifier === this.joystickTouchId) {
+        e.preventDefault();
+        this.updateJoystick(touch.clientX, touch.clientY);
+      }
+    }
+  }
+
+  private handleTouchEnd(e: TouchEvent): void {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+
+      if (touch.identifier === this.joystickTouchId) {
+        this.resetJoystick();
+      }
+    }
+  }
+
+  private updateJoystick(touchX: number, touchY: number): void {
+    const dx = touchX - this.joystickStartX;
+    const dy = touchY - this.joystickStartY;
+
+    // Max radius for joystick movement
+    const maxRadius = this.joystickOuterSize / 2 - this.joystickInnerSize / 2;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const clampedDistance = Math.min(distance, maxRadius);
+
+    let normalizedX = 0;
+    let normalizedY = 0;
+
+    if (distance > 0) {
+      const dirX = dx / distance;
+      const dirY = dy / distance;
+
+      // Update visual position
+      const visualX = dirX * clampedDistance;
+      const visualY = dirY * clampedDistance;
+      this.joystickInner.left = `${visualX}px`;
+      this.joystickInner.top = `${visualY}px`;
+
+      // Calculate normalized input (-1 to 1)
+      normalizedX = dirX * (clampedDistance / maxRadius);
+      normalizedY = dirY * (clampedDistance / maxRadius);
+    }
+
+    // Apply dead zone
+    if (Math.abs(normalizedX) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) normalizedX = 0;
+    if (Math.abs(normalizedY) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) normalizedY = 0;
+
+    // Update input state (invert Y: screen down = game backward)
+    this.inputState.movement.x = normalizedX;
+    this.inputState.movement.y = -normalizedY;
+  }
+
+  private resetJoystick(): void {
+    this.joystickTouchId = -1;
+    this.joystickInner.left = '0px';
+    this.joystickInner.top = '0px';
+    this.inputState.movement.x = 0;
+    this.inputState.movement.y = 0;
   }
 
   private createActionButtons(): void {
@@ -121,62 +207,30 @@ export class TouchController {
     const bottomOffset = this.isMobile ? 30 : 100;
     const buttonSpacing = this.isMobile ? 5 : 10;
 
-    // FIRE button
-    const shootBtn = this.createActionButton(
-      'shoot',
-      'FIRE',
-      COLORS.BUTTON_SHOOT,
-      this.actionButtonSize,
-      `${-rightOffset}px`,
-      `${-bottomOffset}px`
-    );
+    const shootBtn = this.createActionButton('shoot', 'FIRE', COLORS.BUTTON_SHOOT,
+      this.actionButtonSize, `${-rightOffset}px`, `${-bottomOffset}px`);
     this.actionButtons.set('shoot', shootBtn);
 
-    // COVER button
     const coverLeftOffset = rightOffset + this.actionButtonSize + buttonSpacing;
-    const coverBtn = this.createActionButton(
-      'cover',
-      'CVR',
-      COLORS.BUTTON_COVER,
-      this.actionButtonSmallSize,
-      `${-coverLeftOffset}px`,
-      `${-bottomOffset}px`
-    );
+    const coverBtn = this.createActionButton('cover', 'CVR', COLORS.BUTTON_COVER,
+      this.actionButtonSmallSize, `${-coverLeftOffset}px`, `${-bottomOffset}px`);
     this.actionButtons.set('cover', coverBtn);
 
-    // MELEE button
     const meleeTopOffset = bottomOffset + this.actionButtonSize + buttonSpacing;
-    const meleeBtn = this.createActionButton(
-      'melee',
-      'HIT',
-      COLORS.BUTTON_MELEE,
-      this.actionButtonSmallSize,
-      `${-rightOffset}px`,
-      `${-meleeTopOffset}px`
-    );
+    const meleeBtn = this.createActionButton('melee', 'HIT', COLORS.BUTTON_MELEE,
+      this.actionButtonSmallSize, `${-rightOffset}px`, `${-meleeTopOffset}px`);
     this.actionButtons.set('melee', meleeBtn);
 
-    // RUN button
     const sprintLeftOffset = rightOffset + this.actionButtonSize + buttonSpacing;
     const sprintTopOffset = bottomOffset + this.actionButtonSize + buttonSpacing;
-    const sprintBtn = this.createActionButton(
-      'sprint',
-      'RUN',
-      COLORS.BUTTON_SPRINT,
-      this.actionButtonSmallSize,
-      `${-sprintLeftOffset}px`,
-      `${-sprintTopOffset}px`
-    );
+    const sprintBtn = this.createActionButton('sprint', 'RUN', COLORS.BUTTON_SPRINT,
+      this.actionButtonSmallSize, `${-sprintLeftOffset}px`, `${-sprintTopOffset}px`);
     this.actionButtons.set('sprint', sprintBtn);
   }
 
   private createActionButton(
-    action: InputActionType,
-    label: string,
-    backgroundColor: string,
-    size: number,
-    left: string,
-    top: string
+    action: InputActionType, label: string, backgroundColor: string,
+    size: number, left: string, top: string
   ): Button {
     const button = Button.CreateSimpleButton(`${action}Btn`, label);
     button.width = `${size}px`;
@@ -191,7 +245,6 @@ export class TouchController {
     button.thickness = this.isMobile ? 1 : 2;
     button.fontFamily = 'Arial';
     button.fontSize = this.isMobile ? 10 : (size > 80 ? 18 : 14);
-    button.isPointerBlocker = true;
 
     button.onPointerDownObservable.add(() => {
       this.inputState.actions.set(action, true);
@@ -215,19 +268,18 @@ export class TouchController {
 
   public setButtonVisible(action: InputActionType, visible: boolean): void {
     const button = this.actionButtons.get(action);
-    if (button) {
-      button.isVisible = visible;
-    }
+    if (button) button.isVisible = visible;
   }
 
   public setJoystickVisible(visible: boolean): void {
-    if (VirtualJoystick.Canvas) {
-      VirtualJoystick.Canvas.style.display = visible ? 'block' : 'none';
-    }
+    this.joystickOuter.isVisible = visible;
   }
 
   public dispose(): void {
-    this.leftJoystick.releaseCanvas();
+    window.removeEventListener('touchstart', this.onTouchStart, { capture: true });
+    window.removeEventListener('touchmove', this.onTouchMove, { capture: true });
+    window.removeEventListener('touchend', this.onTouchEnd, { capture: true });
+    window.removeEventListener('touchcancel', this.onTouchEnd, { capture: true });
     this.guiTexture.dispose();
     this.actionButtons.clear();
   }

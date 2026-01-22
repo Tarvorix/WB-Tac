@@ -120,10 +120,12 @@ export class KeyboardMouseController {
   private updateMovementFromKeys(): void {
     let x = 0;
     let y = 0;
+    let hasKeyboardInput = false;
 
     for (const key of this.keyboardBindings.moveForward || []) {
       if (this.inputMap[key.toLowerCase()]) {
         y = 1;
+        hasKeyboardInput = true;
         break;
       }
     }
@@ -131,6 +133,7 @@ export class KeyboardMouseController {
     for (const key of this.keyboardBindings.moveBackward || []) {
       if (this.inputMap[key.toLowerCase()]) {
         y = y === 1 ? 0 : -1;
+        hasKeyboardInput = true;
         break;
       }
     }
@@ -138,6 +141,7 @@ export class KeyboardMouseController {
     for (const key of this.keyboardBindings.moveRight || []) {
       if (this.inputMap[key.toLowerCase()]) {
         x = 1;
+        hasKeyboardInput = true;
         break;
       }
     }
@@ -145,12 +149,16 @@ export class KeyboardMouseController {
     for (const key of this.keyboardBindings.moveLeft || []) {
       if (this.inputMap[key.toLowerCase()]) {
         x = x === 1 ? 0 : -1;
+        hasKeyboardInput = true;
         break;
       }
     }
 
-    this.inputState.movement.x = x;
-    this.inputState.movement.y = y;
+    // Only update movement if keyboard input detected, to avoid overwriting touch input
+    if (hasKeyboardInput) {
+      this.inputState.movement.x = x;
+      this.inputState.movement.y = y;
+    }
   }
 
   private updateActionsFromKeys(): void {
