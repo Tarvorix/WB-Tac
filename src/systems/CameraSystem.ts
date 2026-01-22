@@ -3,7 +3,11 @@ import {
   FollowCamera,
   Vector3,
   TransformNode,
-  AbstractMesh
+  AbstractMesh,
+  Animation,
+  EasingFunction,
+  QuadraticEase,
+  AnimationGroup
 } from '@babylonjs/core';
 import { GAME_CONSTANTS } from '../utils/Constants';
 
@@ -11,6 +15,7 @@ export class CameraSystem {
   private camera: FollowCamera;
   private scene: Scene;
   private target: TransformNode | AbstractMesh | null = null;
+  private shakeAnimationGroup: AnimationGroup | null = null;
 
   constructor(scene: Scene, canvas: HTMLCanvasElement) {
     this.scene = scene;
@@ -107,31 +112,99 @@ export class CameraSystem {
   public update(_deltaTime: number): void {
   }
 
+  /**
+   * Camera shake using Babylon.js Animation system
+   * More efficient than observable polling and frame-rate independent
+   */
   public shake(intensity: number, duration: number): void {
+    // Stop any existing shake animation
+    if (this.shakeAnimationGroup) {
+      this.shakeAnimationGroup.stop();
+      this.shakeAnimationGroup.dispose();
+    }
+
     const originalRadius = this.camera.radius;
     const originalHeight = this.camera.heightOffset;
-    const startTime = performance.now();
+    const frameRate = 60;
+    const totalFrames = Math.round(duration * frameRate);
 
-    const shakeObserver = this.scene.onBeforeRenderObservable.add(() => {
-      const elapsed = performance.now() - startTime;
-      const progress = elapsed / (duration * 1000);
+    // Create easing function for decay
+    const easingFunction = new QuadraticEase();
+    easingFunction.setEasingMode(EasingFunction.EASINGMODE_EASEOUT);
 
-      if (progress >= 1) {
-        this.camera.radius = originalRadius;
-        this.camera.heightOffset = originalHeight;
-        this.scene.onBeforeRenderObservable.remove(shakeObserver);
-        return;
-      }
+    // Generate shake keyframes for radius
+    const radiusAnimation = new Animation(
+      'cameraShakeRadius',
+      'radius',
+      frameRate,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT
+    );
 
+    const radiusKeyframes = [];
+    for (let frame = 0; frame <= totalFrames; frame++) {
+      const progress = frame / totalFrames;
+      const decay = 1 - progress; // Linear decay, easing applied separately
+      const shakeOffset = (Math.random() - 0.5) * intensity * decay;
+      radiusKeyframes.push({
+        frame: frame,
+        value: originalRadius + shakeOffset
+      });
+    }
+    // Ensure final frame returns to original
+    radiusKeyframes[radiusKeyframes.length - 1].value = originalRadius;
+    radiusAnimation.setKeys(radiusKeyframes);
+    radiusAnimation.setEasingFunction(easingFunction);
+
+    // Generate shake keyframes for height
+    const heightAnimation = new Animation(
+      'cameraShakeHeight',
+      'heightOffset',
+      frameRate,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT
+    );
+
+    const heightKeyframes = [];
+    for (let frame = 0; frame <= totalFrames; frame++) {
+      const progress = frame / totalFrames;
       const decay = 1 - progress;
-      const shakeAmount = intensity * decay;
+      const shakeOffset = (Math.random() - 0.5) * intensity * 0.5 * decay;
+      heightKeyframes.push({
+        frame: frame,
+        value: originalHeight + shakeOffset
+      });
+    }
+    // Ensure final frame returns to original
+    heightKeyframes[heightKeyframes.length - 1].value = originalHeight;
+    heightAnimation.setKeys(heightKeyframes);
+    heightAnimation.setEasingFunction(easingFunction);
 
-      this.camera.radius = originalRadius + (Math.random() - 0.5) * shakeAmount;
-      this.camera.heightOffset = originalHeight + (Math.random() - 0.5) * shakeAmount * 0.5;
+    // Create animation group for coordinated playback
+    this.shakeAnimationGroup = new AnimationGroup('cameraShakeGroup', this.scene);
+    this.shakeAnimationGroup.addTargetedAnimation(radiusAnimation, this.camera);
+    this.shakeAnimationGroup.addTargetedAnimation(heightAnimation, this.camera);
+
+    // Play the animation group
+    this.shakeAnimationGroup.play(false);
+
+    // Clean up when done
+    this.shakeAnimationGroup.onAnimationGroupEndObservable.addOnce(() => {
+      // Ensure camera returns to exact original values
+      this.camera.radius = originalRadius;
+      this.camera.heightOffset = originalHeight;
+      if (this.shakeAnimationGroup) {
+        this.shakeAnimationGroup.dispose();
+        this.shakeAnimationGroup = null;
+      }
     });
   }
 
   public dispose(): void {
+    if (this.shakeAnimationGroup) {
+      this.shakeAnimationGroup.stop();
+      this.shakeAnimationGroup.dispose();
+    }
     this.camera.dispose();
   }
 }

@@ -5,14 +5,14 @@ import {
   AbstractMesh,
   TransformNode,
   Mesh,
-  MeshBuilder
+  MeshBuilder,
+  Scalar
 } from '@babylonjs/core';
 import { AssetLoader } from '../core/AssetLoader';
 import { CharacterAnimationController } from './CharacterAnimationController';
 import { AnimationState } from '../types/AnimationTypes';
 import { CharacterStats, createDefaultCharacterStats } from '../types/GameTypes';
 import { GAME_CONSTANTS } from '../utils/Constants';
-import { rotateTowards, normalizeAngle } from '../utils/MathUtils';
 import { MuzzleFlash } from '../effects/MuzzleFlash';
 
 export class Character {
@@ -188,13 +188,16 @@ export class Character {
   public update(deltaTime: number): void {
     if (!this.stats.isAlive) return;
 
-    const rotationSpeed = GAME_CONSTANTS.CHARACTER_ROTATION_SPEED * deltaTime;
-    this.currentRotation = rotateTowards(
+    // Use Babylon.js Scalar.LerpAngle for smooth rotation interpolation
+    // This handles angle wrapping automatically and provides frame-rate independent smoothing
+    const lerpFactor = Math.min(1, GAME_CONSTANTS.CHARACTER_ROTATION_SPEED * deltaTime);
+    this.currentRotation = Scalar.LerpAngle(
       this.currentRotation,
       this.targetRotation,
-      rotationSpeed
+      lerpFactor
     );
-    this.currentRotation = normalizeAngle(this.currentRotation);
+    // Normalize to keep angle in -PI to PI range
+    this.currentRotation = Scalar.NormalizeRadians(this.currentRotation);
 
     this.rootNode.rotation.y = this.currentRotation;
 
