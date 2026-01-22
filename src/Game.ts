@@ -6,6 +6,7 @@ import {
   HemisphericLight,
   DirectionalLight,
   MeshBuilder,
+  Mesh,
   StandardMaterial,
   ShadowGenerator,
   Texture
@@ -130,97 +131,244 @@ export class Game {
   }
 
   private createTrench(): void {
-    // Create a trench in one area of the map (negative X side)
-    // Trench dimensions: 15 units long, 3 units wide, 1.5 units deep
-    const trenchLength = 15;
-    const trenchWidth = 3;
-    const trenchDepth = 1.5;
+    // Create a WW1-style trench in one area of the map (negative X side)
+    // Trench dimensions: 20 units long, 3 units wide at bottom, 1.8 units deep
+    const trenchLength = 20;
+    const trenchWidthBottom = 2.5;
+    const trenchWidthTop = 4;
+    const trenchDepth = 1.8;
     const trenchPosition = new Vector3(-20, 0, 0);
 
-    // Create trench floor (lowered ground)
+    // Materials for trench components
+    const earthMaterial = new StandardMaterial('trenchEarthMaterial', this.scene);
+    earthMaterial.diffuseColor = new Color3(0.35, 0.25, 0.15); // Brown earth
+    earthMaterial.specularColor = new Color3(0.05, 0.05, 0.05);
+
+    const dirtFloorMaterial = new StandardMaterial('trenchFloorMaterial', this.scene);
+    dirtFloorMaterial.diffuseColor = new Color3(0.2, 0.15, 0.1); // Dark dirt
+    dirtFloorMaterial.specularColor = new Color3(0.02, 0.02, 0.02);
+
+    const sandbagMaterial = new StandardMaterial('sandbagMaterial', this.scene);
+    sandbagMaterial.diffuseColor = new Color3(0.55, 0.5, 0.35); // Tan/khaki sandbags
+    sandbagMaterial.specularColor = new Color3(0.05, 0.05, 0.05);
+
+    const woodMaterial = new StandardMaterial('trenchWoodMaterial', this.scene);
+    woodMaterial.diffuseColor = new Color3(0.4, 0.3, 0.2); // Dark wood
+    woodMaterial.specularColor = new Color3(0.1, 0.08, 0.05);
+
+    // === TRENCH FLOOR ===
     const trenchFloor = MeshBuilder.CreateGround(
       'trenchFloor',
       {
-        width: trenchWidth,
+        width: trenchWidthBottom,
         height: trenchLength,
-        subdivisions: 1
+        subdivisions: 4
       },
       this.scene
     );
-    trenchFloor.position = new Vector3(
-      trenchPosition.x,
-      -trenchDepth,
-      trenchPosition.z
-    );
-
-    const trenchFloorMaterial = new StandardMaterial('trenchFloorMaterial', this.scene);
-    trenchFloorMaterial.diffuseColor = new Color3(0.15, 0.1, 0.08); // Dark brown/dirt
-    trenchFloorMaterial.specularColor = new Color3(0.05, 0.05, 0.05);
-    trenchFloor.material = trenchFloorMaterial;
+    trenchFloor.position = new Vector3(trenchPosition.x, -trenchDepth, trenchPosition.z);
+    trenchFloor.material = dirtFloorMaterial;
     trenchFloor.receiveShadows = true;
     trenchFloor.checkCollisions = true;
 
-    // Create trench walls (left and right sides)
-    const wallThickness = 0.3;
+    // === SLOPED TRENCH WALLS using ExtrudeShape ===
+    // Create a cross-section profile for one trench wall (sloped inward)
+    const wallProfile = [
+      new Vector3(0, 0, 0),                    // Top outer edge (ground level)
+      new Vector3(0.8, 0, 0),                  // Top of berm
+      new Vector3(0.6, -0.3, 0),               // Inner edge of berm
+      new Vector3(0.3, -trenchDepth * 0.3, 0), // Start of slope
+      new Vector3(0, -trenchDepth, 0)          // Bottom at trench floor
+    ];
 
-    // Left trench wall
-    const leftWall = MeshBuilder.CreateBox(
+    // Path along the trench length
+    const wallPath: Vector3[] = [];
+    for (let i = 0; i <= trenchLength; i += 0.5) {
+      wallPath.push(new Vector3(0, 0, i - trenchLength / 2));
+    }
+
+    // Left wall (extruded shape)
+    const leftWall = MeshBuilder.ExtrudeShape(
       'trenchLeftWall',
       {
-        width: wallThickness,
-        height: trenchDepth,
-        depth: trenchLength
+        shape: wallProfile,
+        path: wallPath,
+        sideOrientation: Mesh.DOUBLESIDE,
+        cap: Mesh.CAP_ALL
       },
       this.scene
     );
     leftWall.position = new Vector3(
-      trenchPosition.x - trenchWidth / 2 - wallThickness / 2,
-      -trenchDepth / 2,
+      trenchPosition.x - trenchWidthBottom / 2,
+      0,
       trenchPosition.z
     );
+    leftWall.material = earthMaterial;
+    leftWall.receiveShadows = true;
+    leftWall.checkCollisions = true;
 
-    // Right trench wall
-    const rightWall = MeshBuilder.CreateBox(
+    // Right wall (mirror the profile)
+    const rightWallProfile = wallProfile.map(v => new Vector3(-v.x, v.y, v.z));
+    const rightWall = MeshBuilder.ExtrudeShape(
       'trenchRightWall',
       {
-        width: wallThickness,
-        height: trenchDepth,
-        depth: trenchLength
+        shape: rightWallProfile,
+        path: wallPath,
+        sideOrientation: Mesh.DOUBLESIDE,
+        cap: Mesh.CAP_ALL
       },
       this.scene
     );
     rightWall.position = new Vector3(
-      trenchPosition.x + trenchWidth / 2 + wallThickness / 2,
-      -trenchDepth / 2,
+      trenchPosition.x + trenchWidthBottom / 2,
+      0,
       trenchPosition.z
     );
-
-    // Trench wall material (earth/dirt)
-    const trenchWallMaterial = new StandardMaterial('trenchWallMaterial', this.scene);
-    trenchWallMaterial.diffuseColor = new Color3(0.25, 0.18, 0.12); // Brown earth
-    trenchWallMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
-
-    leftWall.material = trenchWallMaterial;
-    rightWall.material = trenchWallMaterial;
-
-    leftWall.receiveShadows = true;
+    rightWall.material = earthMaterial;
     rightWall.receiveShadows = true;
-    leftWall.checkCollisions = true;
     rightWall.checkCollisions = true;
 
-    // Add trench walls to shadow casters
-    if (this.shadowGenerator) {
-      this.shadowGenerator.addShadowCaster(leftWall);
-      this.shadowGenerator.addShadowCaster(rightWall);
+    // === SANDBAG BERMS along trench edges ===
+    const createSandbagRow = (name: string, xOffset: number, zStart: number, count: number): void => {
+      for (let i = 0; i < count; i++) {
+        // Individual sandbag (rounded box shape)
+        const sandbag = MeshBuilder.CreateBox(
+          `${name}_${i}`,
+          {
+            width: 0.5,
+            height: 0.25,
+            depth: 0.35
+          },
+          this.scene
+        );
+
+        // Stagger position slightly for realism
+        const stagger = (i % 2) * 0.1;
+        sandbag.position = new Vector3(
+          trenchPosition.x + xOffset + stagger,
+          0.12,
+          zStart + i * 0.55
+        );
+
+        // Slight random rotation for organic look
+        sandbag.rotation.y = (Math.random() - 0.5) * 0.3;
+        sandbag.rotation.z = (Math.random() - 0.5) * 0.1;
+
+        sandbag.material = sandbagMaterial;
+        sandbag.receiveShadows = true;
+        sandbag.checkCollisions = true;
+
+        if (this.shadowGenerator) {
+          this.shadowGenerator.addShadowCaster(sandbag);
+        }
+      }
+    };
+
+    // Create sandbag rows on both sides
+    const sandbagCount = Math.floor(trenchLength / 0.55) - 2;
+    createSandbagRow('sandbagLeft', -trenchWidthTop / 2 - 0.3, -trenchLength / 2 + 1, sandbagCount);
+    createSandbagRow('sandbagRight', trenchWidthTop / 2 + 0.3, -trenchLength / 2 + 1, sandbagCount);
+
+    // Second layer of sandbags (stacked)
+    for (let i = 0; i < sandbagCount - 4; i += 2) {
+      const leftStackBag = MeshBuilder.CreateBox(
+        `sandbagLeftStack_${i}`,
+        { width: 0.5, height: 0.25, depth: 0.35 },
+        this.scene
+      );
+      leftStackBag.position = new Vector3(
+        trenchPosition.x - trenchWidthTop / 2 - 0.25,
+        0.37,
+        -trenchLength / 2 + 1.5 + i * 0.55
+      );
+      leftStackBag.rotation.y = (Math.random() - 0.5) * 0.2;
+      leftStackBag.material = sandbagMaterial;
+      leftStackBag.receiveShadows = true;
+      if (this.shadowGenerator) {
+        this.shadowGenerator.addShadowCaster(leftStackBag);
+      }
+
+      const rightStackBag = MeshBuilder.CreateBox(
+        `sandbagRightStack_${i}`,
+        { width: 0.5, height: 0.25, depth: 0.35 },
+        this.scene
+      );
+      rightStackBag.position = new Vector3(
+        trenchPosition.x + trenchWidthTop / 2 + 0.25,
+        0.37,
+        -trenchLength / 2 + 1.5 + i * 0.55
+      );
+      rightStackBag.rotation.y = (Math.random() - 0.5) * 0.2;
+      rightStackBag.material = sandbagMaterial;
+      rightStackBag.receiveShadows = true;
+      if (this.shadowGenerator) {
+        this.shadowGenerator.addShadowCaster(rightStackBag);
+      }
     }
 
-    // Create ramp to enter trench at one end
-    const rampLength = 4;
+    // === WOODEN SUPPORT PLANKS on walls ===
+    const plankSpacing = 3;
+    for (let i = 0; i < trenchLength / plankSpacing; i++) {
+      // Vertical support posts
+      const leftPost = MeshBuilder.CreateBox(
+        `trenchPostLeft_${i}`,
+        { width: 0.15, height: trenchDepth * 0.8, depth: 0.15 },
+        this.scene
+      );
+      leftPost.position = new Vector3(
+        trenchPosition.x - trenchWidthBottom / 2 + 0.1,
+        -trenchDepth / 2,
+        trenchPosition.z - trenchLength / 2 + 1 + i * plankSpacing
+      );
+      leftPost.material = woodMaterial;
+      leftPost.receiveShadows = true;
+
+      const rightPost = MeshBuilder.CreateBox(
+        `trenchPostRight_${i}`,
+        { width: 0.15, height: trenchDepth * 0.8, depth: 0.15 },
+        this.scene
+      );
+      rightPost.position = new Vector3(
+        trenchPosition.x + trenchWidthBottom / 2 - 0.1,
+        -trenchDepth / 2,
+        trenchPosition.z - trenchLength / 2 + 1 + i * plankSpacing
+      );
+      rightPost.material = woodMaterial;
+      rightPost.receiveShadows = true;
+
+      if (this.shadowGenerator) {
+        this.shadowGenerator.addShadowCaster(leftPost);
+        this.shadowGenerator.addShadowCaster(rightPost);
+      }
+    }
+
+    // Horizontal duckboards on floor
+    for (let i = 0; i < trenchLength - 1; i += 1.5) {
+      const duckboard = MeshBuilder.CreateBox(
+        `duckboard_${i}`,
+        { width: trenchWidthBottom * 0.8, height: 0.05, depth: 0.6 },
+        this.scene
+      );
+      duckboard.position = new Vector3(
+        trenchPosition.x,
+        -trenchDepth + 0.03,
+        trenchPosition.z - trenchLength / 2 + 0.5 + i
+      );
+      duckboard.material = woodMaterial;
+      duckboard.receiveShadows = true;
+      duckboard.checkCollisions = true;
+    }
+
+    // === ENTRY RAMP ===
+    const rampLength = 5;
+    const rampWidth = trenchWidthBottom;
+
+    // Create ramp as a sloped box
     const ramp = MeshBuilder.CreateBox(
       'trenchRamp',
       {
-        width: trenchWidth,
-        height: 0.1,
+        width: rampWidth,
+        height: 0.15,
         depth: rampLength
       },
       this.scene
@@ -228,12 +376,51 @@ export class Game {
     ramp.position = new Vector3(
       trenchPosition.x,
       -trenchDepth / 2,
-      trenchPosition.z + trenchLength / 2 + rampLength / 2 - 0.5
+      trenchPosition.z + trenchLength / 2 + rampLength / 2 - 0.3
     );
     ramp.rotation.x = Math.atan(trenchDepth / rampLength);
-    ramp.material = trenchWallMaterial;
+    ramp.material = earthMaterial;
     ramp.receiveShadows = true;
     ramp.checkCollisions = true;
+
+    // Ramp side walls
+    const rampSideHeight = trenchDepth * 0.6;
+    const rampSideLeft = MeshBuilder.CreateBox(
+      'rampSideLeft',
+      { width: 0.3, height: rampSideHeight, depth: rampLength },
+      this.scene
+    );
+    rampSideLeft.position = new Vector3(
+      trenchPosition.x - rampWidth / 2 - 0.15,
+      -trenchDepth / 2,
+      trenchPosition.z + trenchLength / 2 + rampLength / 2 - 0.3
+    );
+    rampSideLeft.material = earthMaterial;
+    rampSideLeft.receiveShadows = true;
+    rampSideLeft.checkCollisions = true;
+
+    const rampSideRight = MeshBuilder.CreateBox(
+      'rampSideRight',
+      { width: 0.3, height: rampSideHeight, depth: rampLength },
+      this.scene
+    );
+    rampSideRight.position = new Vector3(
+      trenchPosition.x + rampWidth / 2 + 0.15,
+      -trenchDepth / 2,
+      trenchPosition.z + trenchLength / 2 + rampLength / 2 - 0.3
+    );
+    rampSideRight.material = earthMaterial;
+    rampSideRight.receiveShadows = true;
+    rampSideRight.checkCollisions = true;
+
+    // Add main walls to shadow casters
+    if (this.shadowGenerator) {
+      this.shadowGenerator.addShadowCaster(leftWall);
+      this.shadowGenerator.addShadowCaster(rightWall);
+      this.shadowGenerator.addShadowCaster(ramp);
+      this.shadowGenerator.addShadowCaster(rampSideLeft);
+      this.shadowGenerator.addShadowCaster(rampSideRight);
+    }
   }
 
   private createRoom(): void {

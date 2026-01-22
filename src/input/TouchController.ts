@@ -29,6 +29,12 @@ export class TouchController {
   private joystickStartX: number = 0;
   private joystickStartY: number = 0;
 
+  // Input smoothing for iOS touch jitter reduction
+  private smoothedX: number = 0;
+  private smoothedY: number = 0;
+  private readonly SMOOTHING_FACTOR: number = 0.25; // Lower = more smoothing (0.15-0.3 works well)
+  private readonly IOS_DEAD_ZONE: number = 0.15; // Slightly larger dead zone for iOS precision
+
   private actionButtons: Map<InputActionType, Button> = new Map();
 
   // Responsive sizes
@@ -167,8 +173,8 @@ export class TouchController {
     const distance = Math.sqrt(dx * dx + dy * dy);
     const clampedDistance = Math.min(distance, maxRadius);
 
-    let normalizedX = 0;
-    let normalizedY = 0;
+    let rawX = 0;
+    let rawY = 0;
 
     if (distance > 0) {
       const dirX = dx / distance;
@@ -181,23 +187,38 @@ export class TouchController {
       this.joystickInner.top = `${visualY}px`;
 
       // Calculate normalized input (-1 to 1)
-      normalizedX = dirX * (clampedDistance / maxRadius);
-      normalizedY = dirY * (clampedDistance / maxRadius);
+      rawX = dirX * (clampedDistance / maxRadius);
+      rawY = dirY * (clampedDistance / maxRadius);
     }
 
-    // Apply dead zone
-    if (Math.abs(normalizedX) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) normalizedX = 0;
-    if (Math.abs(normalizedY) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) normalizedY = 0;
+    // Apply dead zone (use larger iOS dead zone for touch precision)
+    const deadZone = this.IOS_DEAD_ZONE;
+    if (Math.abs(rawX) < deadZone) rawX = 0;
+    if (Math.abs(rawY) < deadZone) rawY = 0;
+
+    // Apply exponential smoothing (low-pass filter) to reduce iOS touch jitter
+    // This prevents the twitchy/spinning behavior by filtering out rapid input changes
+    this.smoothedX = rawX * this.SMOOTHING_FACTOR + this.smoothedX * (1 - this.SMOOTHING_FACTOR);
+    this.smoothedY = rawY * this.SMOOTHING_FACTOR + this.smoothedY * (1 - this.SMOOTHING_FACTOR);
+
+    // Apply dead zone again after smoothing to prevent drift when near center
+    let finalX = this.smoothedX;
+    let finalY = this.smoothedY;
+    if (Math.abs(finalX) < deadZone * 0.5) finalX = 0;
+    if (Math.abs(finalY) < deadZone * 0.5) finalY = 0;
 
     // Update input state (invert Y: screen down = game backward)
-    this.inputState.movement.x = normalizedX;
-    this.inputState.movement.y = -normalizedY;
+    this.inputState.movement.x = finalX;
+    this.inputState.movement.y = -finalY;
   }
 
   private resetJoystick(): void {
     this.joystickTouchId = -1;
     this.joystickInner.left = '0px';
     this.joystickInner.top = '0px';
+    // Reset smoothed values immediately to prevent lingering movement
+    this.smoothedX = 0;
+    this.smoothedY = 0;
     this.inputState.movement.x = 0;
     this.inputState.movement.y = 0;
   }
