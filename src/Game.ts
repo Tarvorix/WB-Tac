@@ -59,6 +59,8 @@ export class Game {
     this.setupScene();
     this.setupLighting();
     this.createGround();
+    this.createTrench();
+    this.createRoom();
 
     await this.loadAssets();
 
@@ -127,6 +129,255 @@ export class Game {
     ground.checkCollisions = true;
   }
 
+  private createTrench(): void {
+    // Create a trench in one area of the map (negative X side)
+    // Trench dimensions: 15 units long, 3 units wide, 1.5 units deep
+    const trenchLength = 15;
+    const trenchWidth = 3;
+    const trenchDepth = 1.5;
+    const trenchPosition = new Vector3(-20, 0, 0);
+
+    // Create trench floor (lowered ground)
+    const trenchFloor = MeshBuilder.CreateGround(
+      'trenchFloor',
+      {
+        width: trenchWidth,
+        height: trenchLength,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    trenchFloor.position = new Vector3(
+      trenchPosition.x,
+      -trenchDepth,
+      trenchPosition.z
+    );
+
+    const trenchFloorMaterial = new StandardMaterial('trenchFloorMaterial', this.scene);
+    trenchFloorMaterial.diffuseColor = new Color3(0.15, 0.1, 0.08); // Dark brown/dirt
+    trenchFloorMaterial.specularColor = new Color3(0.05, 0.05, 0.05);
+    trenchFloor.material = trenchFloorMaterial;
+    trenchFloor.receiveShadows = true;
+    trenchFloor.checkCollisions = true;
+
+    // Create trench walls (left and right sides)
+    const wallThickness = 0.3;
+
+    // Left trench wall
+    const leftWall = MeshBuilder.CreateBox(
+      'trenchLeftWall',
+      {
+        width: wallThickness,
+        height: trenchDepth,
+        depth: trenchLength
+      },
+      this.scene
+    );
+    leftWall.position = new Vector3(
+      trenchPosition.x - trenchWidth / 2 - wallThickness / 2,
+      -trenchDepth / 2,
+      trenchPosition.z
+    );
+
+    // Right trench wall
+    const rightWall = MeshBuilder.CreateBox(
+      'trenchRightWall',
+      {
+        width: wallThickness,
+        height: trenchDepth,
+        depth: trenchLength
+      },
+      this.scene
+    );
+    rightWall.position = new Vector3(
+      trenchPosition.x + trenchWidth / 2 + wallThickness / 2,
+      -trenchDepth / 2,
+      trenchPosition.z
+    );
+
+    // Trench wall material (earth/dirt)
+    const trenchWallMaterial = new StandardMaterial('trenchWallMaterial', this.scene);
+    trenchWallMaterial.diffuseColor = new Color3(0.25, 0.18, 0.12); // Brown earth
+    trenchWallMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
+
+    leftWall.material = trenchWallMaterial;
+    rightWall.material = trenchWallMaterial;
+
+    leftWall.receiveShadows = true;
+    rightWall.receiveShadows = true;
+    leftWall.checkCollisions = true;
+    rightWall.checkCollisions = true;
+
+    // Add trench walls to shadow casters
+    if (this.shadowGenerator) {
+      this.shadowGenerator.addShadowCaster(leftWall);
+      this.shadowGenerator.addShadowCaster(rightWall);
+    }
+
+    // Create ramp to enter trench at one end
+    const rampLength = 4;
+    const ramp = MeshBuilder.CreateBox(
+      'trenchRamp',
+      {
+        width: trenchWidth,
+        height: 0.1,
+        depth: rampLength
+      },
+      this.scene
+    );
+    ramp.position = new Vector3(
+      trenchPosition.x,
+      -trenchDepth / 2,
+      trenchPosition.z + trenchLength / 2 + rampLength / 2 - 0.5
+    );
+    ramp.rotation.x = Math.atan(trenchDepth / rampLength);
+    ramp.material = trenchWallMaterial;
+    ramp.receiveShadows = true;
+    ramp.checkCollisions = true;
+  }
+
+  private createRoom(): void {
+    // Create a room with walls in another area of the map (positive X, negative Z)
+    // Room dimensions: 8x8 units, 3 units high, with one doorway
+    const roomSize = 8;
+    const wallHeight = 3;
+    const wallThickness = 0.4;
+    const roomPosition = new Vector3(20, 0, -15);
+    const doorWidth = 2;
+
+    // Wall material
+    const wallMaterial = new StandardMaterial('roomWallMaterial', this.scene);
+    wallMaterial.diffuseColor = new Color3(0.5, 0.5, 0.55); // Gray concrete
+    wallMaterial.specularColor = new Color3(0.2, 0.2, 0.2);
+
+    // North wall (full wall)
+    const northWall = MeshBuilder.CreateBox(
+      'roomNorthWall',
+      {
+        width: roomSize,
+        height: wallHeight,
+        depth: wallThickness
+      },
+      this.scene
+    );
+    northWall.position = new Vector3(
+      roomPosition.x,
+      wallHeight / 2,
+      roomPosition.z + roomSize / 2
+    );
+    northWall.material = wallMaterial;
+    northWall.receiveShadows = true;
+    northWall.checkCollisions = true;
+
+    // South wall (with doorway - split into two sections)
+    const southWallLeftWidth = (roomSize - doorWidth) / 2;
+    const southWallLeft = MeshBuilder.CreateBox(
+      'roomSouthWallLeft',
+      {
+        width: southWallLeftWidth,
+        height: wallHeight,
+        depth: wallThickness
+      },
+      this.scene
+    );
+    southWallLeft.position = new Vector3(
+      roomPosition.x - roomSize / 2 + southWallLeftWidth / 2,
+      wallHeight / 2,
+      roomPosition.z - roomSize / 2
+    );
+    southWallLeft.material = wallMaterial;
+    southWallLeft.receiveShadows = true;
+    southWallLeft.checkCollisions = true;
+
+    const southWallRight = MeshBuilder.CreateBox(
+      'roomSouthWallRight',
+      {
+        width: southWallLeftWidth,
+        height: wallHeight,
+        depth: wallThickness
+      },
+      this.scene
+    );
+    southWallRight.position = new Vector3(
+      roomPosition.x + roomSize / 2 - southWallLeftWidth / 2,
+      wallHeight / 2,
+      roomPosition.z - roomSize / 2
+    );
+    southWallRight.material = wallMaterial;
+    southWallRight.receiveShadows = true;
+    southWallRight.checkCollisions = true;
+
+    // East wall (full wall)
+    const eastWall = MeshBuilder.CreateBox(
+      'roomEastWall',
+      {
+        width: wallThickness,
+        height: wallHeight,
+        depth: roomSize
+      },
+      this.scene
+    );
+    eastWall.position = new Vector3(
+      roomPosition.x + roomSize / 2,
+      wallHeight / 2,
+      roomPosition.z
+    );
+    eastWall.material = wallMaterial;
+    eastWall.receiveShadows = true;
+    eastWall.checkCollisions = true;
+
+    // West wall (full wall)
+    const westWall = MeshBuilder.CreateBox(
+      'roomWestWall',
+      {
+        width: wallThickness,
+        height: wallHeight,
+        depth: roomSize
+      },
+      this.scene
+    );
+    westWall.position = new Vector3(
+      roomPosition.x - roomSize / 2,
+      wallHeight / 2,
+      roomPosition.z
+    );
+    westWall.material = wallMaterial;
+    westWall.receiveShadows = true;
+    westWall.checkCollisions = true;
+
+    // Room floor (slightly raised to distinguish from ground)
+    const roomFloor = MeshBuilder.CreateGround(
+      'roomFloor',
+      {
+        width: roomSize - wallThickness,
+        height: roomSize - wallThickness,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    roomFloor.position = new Vector3(
+      roomPosition.x,
+      0.02, // Slightly above ground to avoid z-fighting
+      roomPosition.z
+    );
+
+    const floorMaterial = new StandardMaterial('roomFloorMaterial', this.scene);
+    floorMaterial.diffuseColor = new Color3(0.4, 0.38, 0.35); // Concrete floor
+    floorMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
+    roomFloor.material = floorMaterial;
+    roomFloor.receiveShadows = true;
+    roomFloor.checkCollisions = true;
+
+    // Add all walls to shadow casters
+    if (this.shadowGenerator) {
+      this.shadowGenerator.addShadowCaster(northWall);
+      this.shadowGenerator.addShadowCaster(southWallLeft);
+      this.shadowGenerator.addShadowCaster(southWallRight);
+      this.shadowGenerator.addShadowCaster(eastWall);
+      this.shadowGenerator.addShadowCaster(westWall);
+    }
+  }
+
   private async loadAssets(): Promise<void> {
     const assetsToLoad = [
       ASSET_PATHS.CHARACTER_IDLE,
@@ -189,13 +440,10 @@ export class Game {
       return;
     }
 
+    // Reduced to 2 cargo containers as requested
     const coverPositions = [
       { position: new Vector3(10, 0, 10), rotation: 0 },
-      { position: new Vector3(-10, 0, 10), rotation: Math.PI / 4 },
-      { position: new Vector3(10, 0, -10), rotation: Math.PI / 2 },
-      { position: new Vector3(-10, 0, -10), rotation: -Math.PI / 4 },
-      { position: new Vector3(0, 0, 15), rotation: 0 },
-      { position: new Vector3(15, 0, 0), rotation: Math.PI / 2 }
+      { position: new Vector3(-10, 0, -10), rotation: -Math.PI / 4 }
     ];
 
     for (let i = 0; i < coverPositions.length; i++) {
