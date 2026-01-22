@@ -7,6 +7,7 @@ import {
 } from '@babylonjs/gui';
 import { InputActionType } from './InputActions';
 import { GAME_CONSTANTS, COLORS } from '../utils/Constants';
+import { detectDevice } from '../utils/DeviceDetection';
 
 export interface InputState {
   movement: { x: number; y: number };
@@ -79,9 +80,10 @@ export class TouchController {
   }
 
   private calculateResponsiveSizes(): void {
-    const screenWidth = window.innerWidth || document.documentElement.clientWidth || 375;
-    const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    this.isMobile = hasTouch && screenWidth < GAME_CONSTANTS.MOBILE_WIDTH_THRESHOLD;
+    const device = detectDevice();
+    // Use mobile sizes on ALL touch devices (iOS, Android, etc.) regardless of screen size
+    // This includes iPads which have large screens but still need touch-friendly controls
+    this.isMobile = device.isTouchDevice;
 
     if (this.isMobile) {
       this.joystickOuterSize = GAME_CONSTANTS.JOYSTICK_OUTER_SIZE_MOBILE;

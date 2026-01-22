@@ -256,7 +256,7 @@ export class Game {
 
         sandbag.material = sandbagMaterial;
         sandbag.receiveShadows = true;
-        sandbag.checkCollisions = true;
+        // Sandbags are decorative only - no collision to prevent character getting stuck
 
         if (this.shadowGenerator) {
           this.shadowGenerator.addShadowCaster(sandbag);
