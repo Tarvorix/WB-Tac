@@ -1,4 +1,4 @@
-import { Scene, VirtualJoystick } from '@babylonjs/core';
+import { Scene, VirtualJoystick, Vector3 } from '@babylonjs/core';
 import {
   AdvancedDynamicTexture,
   Button,
@@ -18,7 +18,7 @@ export class TouchController {
   private inputState: InputState;
   private guiTexture: AdvancedDynamicTexture;
 
-  // Built-in Babylon.js VirtualJoystick - proven to work on iOS
+  // Built-in Babylon.js VirtualJoystick
   private leftJoystick: VirtualJoystick;
 
   private actionButtons: Map<InputActionType, Button> = new Map();
@@ -36,22 +36,25 @@ export class TouchController {
     this.calculateResponsiveSizes();
 
     // Create the built-in VirtualJoystick (left side = true)
+    // The joystick creates its own canvas overlay
     this.leftJoystick = new VirtualJoystick(true);
 
-    // Style the joystick canvas
+    // Configure joystick - limit to container area for better control
+    this.leftJoystick.limitToContainer = true;
+
+    // Set z-index so GUI buttons can still be clicked
+    // The joystick canvas covers the whole screen but we'll handle button clicks separately
     if (VirtualJoystick.Canvas) {
-      VirtualJoystick.Canvas.style.zIndex = '5';
-      // Make the joystick canvas only cover left half for buttons to work
-      VirtualJoystick.Canvas.style.width = '50%';
-      VirtualJoystick.Canvas.style.left = '0';
+      VirtualJoystick.Canvas.style.zIndex = '4';
     }
 
     // Create GUI for action buttons (right side)
+    // GUI renders on top of joystick canvas
     this.guiTexture = AdvancedDynamicTexture.CreateFullscreenUI('touchUI', true, this.scene);
     this.createActionButtons();
 
-    // Update input state from joystick in render loop
-    this.scene.onBeforeRenderObservable.add(() => {
+    // Update input state from joystick every frame
+    this.scene.registerBeforeRender(() => {
       this.updateFromJoystick();
     });
   }
@@ -77,23 +80,21 @@ export class TouchController {
 
   private updateFromJoystick(): void {
     if (this.leftJoystick.pressed) {
-      // deltaPosition gives us the joystick offset
-      // x = left/right, y = up/down (but we need to invert for forward)
-      const dx = this.leftJoystick.deltaPosition.x;
-      const dy = this.leftJoystick.deltaPosition.y;
+      // deltaPosition is a Vector3 with pixel offsets from touch start
+      // x = horizontal (left/right), y = vertical (up/down), z = unused
+      const delta: Vector3 = this.leftJoystick.deltaPosition;
 
-      // Normalize to -1 to 1 range (deltaPosition can exceed 1)
-      const magnitude = Math.sqrt(dx * dx + dy * dy);
-      const maxMagnitude = 50; // Typical max delta
+      // Normalize based on typical joystick radius (about 40-60 pixels)
+      // Using 40 as the "full tilt" distance
+      const maxDistance = 40;
 
-      let normalizedX = 0;
-      let normalizedY = 0;
+      // Clamp and normalize to -1 to 1 range
+      let normalizedX = delta.x / maxDistance;
+      let normalizedY = delta.y / maxDistance;
 
-      if (magnitude > 0) {
-        const clampedMagnitude = Math.min(magnitude, maxMagnitude);
-        normalizedX = (dx / magnitude) * (clampedMagnitude / maxMagnitude);
-        normalizedY = (dy / magnitude) * (clampedMagnitude / maxMagnitude);
-      }
+      // Clamp to -1, 1
+      normalizedX = Math.max(-1, Math.min(1, normalizedX));
+      normalizedY = Math.max(-1, Math.min(1, normalizedY));
 
       // Apply dead zone
       if (Math.abs(normalizedX) < GAME_CONSTANTS.JOYSTICK_DEAD_ZONE) {
@@ -103,7 +104,9 @@ export class TouchController {
         normalizedY = 0;
       }
 
-      // Update input state (invert Y for game: up on joystick = forward)
+      // Update input state
+      // X = left/right rotation
+      // Y = forward/backward (invert because screen Y is down, game Y is forward)
       this.inputState.movement.x = normalizedX;
       this.inputState.movement.y = -normalizedY;
     } else {
