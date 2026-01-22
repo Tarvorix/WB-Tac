@@ -22,12 +22,25 @@ export const GAME_CONSTANTS = {
 
   COVER_DETECTION_RADIUS: 3,
 
+  // Base joystick sizes (will be scaled for mobile)
   JOYSTICK_OUTER_SIZE: 150,
   JOYSTICK_INNER_SIZE: 60,
   JOYSTICK_DEAD_ZONE: 0.1,
 
+  // Mobile joystick sizes (smaller for phone screens)
+  JOYSTICK_OUTER_SIZE_MOBILE: 100,
+  JOYSTICK_INNER_SIZE_MOBILE: 40,
+
+  // Base action button sizes (will be scaled for mobile)
   ACTION_BUTTON_SIZE: 100,
-  ACTION_BUTTON_SMALL_SIZE: 80
+  ACTION_BUTTON_SMALL_SIZE: 80,
+
+  // Mobile action button sizes (smaller for phone screens)
+  ACTION_BUTTON_SIZE_MOBILE: 60,
+  ACTION_BUTTON_SMALL_SIZE_MOBILE: 50,
+
+  // Screen width threshold for mobile sizing (iPhone ~390px, iPad ~768px+)
+  MOBILE_WIDTH_THRESHOLD: 500
 } as const;
 
 export const ASSET_PATHS = {
