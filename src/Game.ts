@@ -104,42 +104,93 @@ export class Game {
   }
 
   private createGround(): void {
-    const ground = MeshBuilder.CreateGround(
-      'ground',
-      {
-        width: GAME_CONSTANTS.GROUND_SIZE,
-        height: GAME_CONSTANTS.GROUND_SIZE,
-        subdivisions: GAME_CONSTANTS.GROUND_SUBDIVISIONS
-      },
-      this.scene
-    );
+    // Create ground in sections to leave a gap for the trench
+    // Trench is at X=-20, width=3, length=20 (Z from -10 to +10)
+    const trenchX = -20;
+    const trenchHalfWidth = 2; // Slightly wider gap for the trench cut
+    const trenchHalfLength = 12; // Extend gap a bit for ramp
 
     const groundMaterial = new StandardMaterial('groundMaterial', this.scene);
-
-    // Load moon texture
     const diffuseTexture = new Texture('textures/moon/diffuse.jpg', this.scene);
     diffuseTexture.uScale = 10;
     diffuseTexture.vScale = 10;
     groundMaterial.diffuseTexture = diffuseTexture;
-
     groundMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
-    ground.material = groundMaterial;
 
-    ground.receiveShadows = true;
-    ground.checkCollisions = true;
+    // Ground section 1: Right side of trench (X > trench)
+    const groundRight = MeshBuilder.CreateGround(
+      'groundRight',
+      {
+        width: GAME_CONSTANTS.GROUND_SIZE / 2 + trenchX - trenchHalfWidth,
+        height: GAME_CONSTANTS.GROUND_SIZE,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    groundRight.position.x = (GAME_CONSTANTS.GROUND_SIZE / 2 + trenchX - trenchHalfWidth) / 2 + trenchX + trenchHalfWidth;
+    groundRight.material = groundMaterial;
+    groundRight.receiveShadows = true;
+    groundRight.checkCollisions = true;
+
+    // Ground section 2: Left side of trench (X < trench)
+    const groundLeft = MeshBuilder.CreateGround(
+      'groundLeft',
+      {
+        width: GAME_CONSTANTS.GROUND_SIZE / 2 - trenchX - trenchHalfWidth,
+        height: GAME_CONSTANTS.GROUND_SIZE,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    groundLeft.position.x = trenchX - trenchHalfWidth - (GAME_CONSTANTS.GROUND_SIZE / 2 - trenchX - trenchHalfWidth) / 2;
+    groundLeft.material = groundMaterial;
+    groundLeft.receiveShadows = true;
+    groundLeft.checkCollisions = true;
+
+    // Ground section 3: Front of trench (Z > trench end)
+    const groundFront = MeshBuilder.CreateGround(
+      'groundFront',
+      {
+        width: trenchHalfWidth * 2,
+        height: GAME_CONSTANTS.GROUND_SIZE / 2 - trenchHalfLength,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    groundFront.position.x = trenchX;
+    groundFront.position.z = trenchHalfLength + (GAME_CONSTANTS.GROUND_SIZE / 2 - trenchHalfLength) / 2;
+    groundFront.material = groundMaterial;
+    groundFront.receiveShadows = true;
+    groundFront.checkCollisions = true;
+
+    // Ground section 4: Back of trench (Z < trench start)
+    const groundBack = MeshBuilder.CreateGround(
+      'groundBack',
+      {
+        width: trenchHalfWidth * 2,
+        height: GAME_CONSTANTS.GROUND_SIZE / 2 - trenchHalfLength,
+        subdivisions: 1
+      },
+      this.scene
+    );
+    groundBack.position.x = trenchX;
+    groundBack.position.z = -trenchHalfLength - (GAME_CONSTANTS.GROUND_SIZE / 2 - trenchHalfLength) / 2;
+    groundBack.material = groundMaterial;
+    groundBack.receiveShadows = true;
+    groundBack.checkCollisions = true;
   }
 
   private createTrench(): void {
-    // Create a WW1-style trench - a depression in the ground with raised earth berms
+    // Create a WW1-style trench - ground has a gap, this fills in the hole
     const trenchLength = 20;
     const trenchWidth = 3;
     const trenchDepth = 1.5;
     const trenchPosition = new Vector3(-20, 0, 0);
-    const bermHeight = 0.6; // Raised earth around trench edges
+    const bermHeight = 0.5;
 
     // Materials
     const dirtMaterial = new StandardMaterial('trenchDirtMaterial', this.scene);
-    dirtMaterial.diffuseColor = new Color3(0.25, 0.18, 0.12);
+    dirtMaterial.diffuseColor = new Color3(0.3, 0.2, 0.12);
     dirtMaterial.specularColor = new Color3(0.05, 0.05, 0.05);
 
     const sandbagMaterial = new StandardMaterial('sandbagMaterial', this.scene);
@@ -150,47 +201,61 @@ export class Game {
     woodMaterial.diffuseColor = new Color3(0.35, 0.25, 0.15);
     woodMaterial.specularColor = new Color3(0.08, 0.06, 0.04);
 
-    // === TRENCH FLOOR (below ground level) ===
+    // === TRENCH FLOOR (visible in the gap in the ground) ===
     const trenchFloor = MeshBuilder.CreateGround(
       'trenchFloor',
-      { width: trenchWidth, height: trenchLength, subdivisions: 2 },
+      { width: trenchWidth + 0.5, height: trenchLength, subdivisions: 2 },
       this.scene
     );
     trenchFloor.position = new Vector3(trenchPosition.x, -trenchDepth, trenchPosition.z);
     trenchFloor.material = dirtMaterial;
     trenchFloor.receiveShadows = true;
 
-    // === TRENCH INNER WALLS (visible dirt walls going down) ===
-    const wallHeight = trenchDepth;
+    // === TRENCH WALLS (thick visible walls showing the cut into ground) ===
+    const wallThickness = 0.5;
 
-    const leftInnerWall = MeshBuilder.CreateBox(
-      'trenchLeftInnerWall',
-      { width: 0.1, height: wallHeight, depth: trenchLength },
+    const leftWall = MeshBuilder.CreateBox(
+      'trenchLeftWall',
+      { width: wallThickness, height: trenchDepth, depth: trenchLength },
       this.scene
     );
-    leftInnerWall.position = new Vector3(
-      trenchPosition.x - trenchWidth / 2,
-      -wallHeight / 2,
+    leftWall.position = new Vector3(
+      trenchPosition.x - trenchWidth / 2 - wallThickness / 2,
+      -trenchDepth / 2,
       trenchPosition.z
     );
-    leftInnerWall.material = dirtMaterial;
-    leftInnerWall.receiveShadows = true;
+    leftWall.material = dirtMaterial;
+    leftWall.receiveShadows = true;
 
-    const rightInnerWall = MeshBuilder.CreateBox(
-      'trenchRightInnerWall',
-      { width: 0.1, height: wallHeight, depth: trenchLength },
+    const rightWall = MeshBuilder.CreateBox(
+      'trenchRightWall',
+      { width: wallThickness, height: trenchDepth, depth: trenchLength },
       this.scene
     );
-    rightInnerWall.position = new Vector3(
-      trenchPosition.x + trenchWidth / 2,
-      -wallHeight / 2,
+    rightWall.position = new Vector3(
+      trenchPosition.x + trenchWidth / 2 + wallThickness / 2,
+      -trenchDepth / 2,
       trenchPosition.z
     );
-    rightInnerWall.material = dirtMaterial;
-    rightInnerWall.receiveShadows = true;
+    rightWall.material = dirtMaterial;
+    rightWall.receiveShadows = true;
 
-    // === RAISED EARTH BERMS (above ground, makes it look like dug out) ===
-    const bermWidth = 1.2;
+    // Back wall (closes off end of trench)
+    const backWall = MeshBuilder.CreateBox(
+      'trenchBackWall',
+      { width: trenchWidth + wallThickness * 2, height: trenchDepth, depth: wallThickness },
+      this.scene
+    );
+    backWall.position = new Vector3(
+      trenchPosition.x,
+      -trenchDepth / 2,
+      trenchPosition.z - trenchLength / 2 - wallThickness / 2
+    );
+    backWall.material = dirtMaterial;
+    backWall.receiveShadows = true;
+
+    // === RAISED BERMS on sides ===
+    const bermWidth = 0.8;
 
     const leftBerm = MeshBuilder.CreateBox(
       'trenchLeftBerm',
@@ -198,7 +263,7 @@ export class Game {
       this.scene
     );
     leftBerm.position = new Vector3(
-      trenchPosition.x - trenchWidth / 2 - bermWidth / 2,
+      trenchPosition.x - trenchWidth / 2 - wallThickness - bermWidth / 2,
       bermHeight / 2,
       trenchPosition.z
     );
@@ -211,25 +276,22 @@ export class Game {
       this.scene
     );
     rightBerm.position = new Vector3(
-      trenchPosition.x + trenchWidth / 2 + bermWidth / 2,
+      trenchPosition.x + trenchWidth / 2 + wallThickness + bermWidth / 2,
       bermHeight / 2,
       trenchPosition.z
     );
     rightBerm.material = dirtMaterial;
     rightBerm.receiveShadows = true;
 
-    // === SANDBAG ROWS on top of berms ===
-    const sandbagHeight = 0.3;
-    const sandbagWidth = 0.8;
-
+    // === SANDBAGS on berms ===
     const leftSandbags = MeshBuilder.CreateBox(
       'trenchLeftSandbags',
-      { width: sandbagWidth, height: sandbagHeight, depth: trenchLength - 2 },
+      { width: 0.6, height: 0.25, depth: trenchLength - 2 },
       this.scene
     );
     leftSandbags.position = new Vector3(
-      trenchPosition.x - trenchWidth / 2 - bermWidth / 2,
-      bermHeight + sandbagHeight / 2,
+      trenchPosition.x - trenchWidth / 2 - wallThickness - bermWidth / 2,
+      bermHeight + 0.125,
       trenchPosition.z
     );
     leftSandbags.material = sandbagMaterial;
@@ -237,18 +299,18 @@ export class Game {
 
     const rightSandbags = MeshBuilder.CreateBox(
       'trenchRightSandbags',
-      { width: sandbagWidth, height: sandbagHeight, depth: trenchLength - 2 },
+      { width: 0.6, height: 0.25, depth: trenchLength - 2 },
       this.scene
     );
     rightSandbags.position = new Vector3(
-      trenchPosition.x + trenchWidth / 2 + bermWidth / 2,
-      bermHeight + sandbagHeight / 2,
+      trenchPosition.x + trenchWidth / 2 + wallThickness + bermWidth / 2,
+      bermHeight + 0.125,
       trenchPosition.z
     );
     rightSandbags.material = sandbagMaterial;
     rightSandbags.receiveShadows = true;
 
-    // === WOODEN DUCKBOARDS on floor ===
+    // === DUCKBOARDS on floor ===
     for (let i = 0; i < trenchLength - 1; i += 2) {
       const duckboard = MeshBuilder.CreateBox(
         `duckboard_${i}`,
@@ -280,8 +342,10 @@ export class Game {
     ramp.material = dirtMaterial;
     ramp.receiveShadows = true;
 
-    // Add shadow casters
+    // Shadow casters
     if (this.shadowGenerator) {
+      this.shadowGenerator.addShadowCaster(leftWall);
+      this.shadowGenerator.addShadowCaster(rightWall);
       this.shadowGenerator.addShadowCaster(leftBerm);
       this.shadowGenerator.addShadowCaster(rightBerm);
       this.shadowGenerator.addShadowCaster(leftSandbags);
