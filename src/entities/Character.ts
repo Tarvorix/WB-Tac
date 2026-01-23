@@ -26,7 +26,7 @@ export class Character {
   private stats: CharacterStats;
 
   private currentVelocity: Vector3 = Vector3.Zero();
-  private targetRotation: number = 0;
+  private rotationVelocity: number = 0; // Rotation speed, not accumulated target
   private currentRotation: number = 0;
 
   private isPerformingAction: boolean = false;
@@ -116,12 +116,15 @@ export class Character {
       return;
     }
 
-    // ROTATION: A/D (movement.x) adjusts rotation - add to current, not set absolute
-    const rotationInput = movement.x; // -1 for A (left), +1 for D (right)
-    if (Math.abs(rotationInput) > 0.1) {
-      const turnSpeed = GAME_CONSTANTS.CHARACTER_TURN_SPEED;
-      // Approximate frame time for consistent turning (will be smoothed in update)
-      this.targetRotation += rotationInput * turnSpeed * (1 / 60);
+    // ROTATION: movement.x controls turn speed (not accumulated position)
+    // This prevents endless spinning from residual joystick values
+    const rotationInput = movement.x; // -1 for left, +1 for right
+    if (Math.abs(rotationInput) > 0.15) {
+      // Set rotation velocity - will be applied in update() with deltaTime
+      this.rotationVelocity = rotationInput * GAME_CONSTANTS.CHARACTER_TURN_SPEED;
+    } else {
+      // No input = stop rotating immediately
+      this.rotationVelocity = 0;
     }
 
     // FORWARD/BACKWARD: W/S (movement.y) moves in facing direction
@@ -146,7 +149,7 @@ export class Character {
       this.currentVelocity.z = 0;
 
       // Only go to idle if not turning
-      if (Math.abs(rotationInput) < 0.1) {
+      if (this.rotationVelocity === 0) {
         this.animationController.transition(AnimationState.IDLE);
       }
     }
@@ -188,14 +191,9 @@ export class Character {
   public update(deltaTime: number): void {
     if (!this.stats.isAlive) return;
 
-    // Use Babylon.js Scalar.LerpAngle for smooth rotation interpolation
-    // This handles angle wrapping automatically and provides frame-rate independent smoothing
-    const lerpFactor = Math.min(1, GAME_CONSTANTS.CHARACTER_ROTATION_SPEED * deltaTime);
-    this.currentRotation = Scalar.LerpAngle(
-      this.currentRotation,
-      this.targetRotation,
-      lerpFactor
-    );
+    // Apply rotation velocity directly (frame-rate independent)
+    // No lerping to a target - rotation stops immediately when input stops
+    this.currentRotation += this.rotationVelocity * deltaTime;
     // Normalize to keep angle in -PI to PI range
     this.currentRotation = Scalar.NormalizeRadians(this.currentRotation);
 
@@ -252,7 +250,7 @@ export class Character {
 
   public setRotation(rotation: number): void {
     this.currentRotation = rotation;
-    this.targetRotation = rotation;
+    this.rotationVelocity = 0;
     this.rootNode.rotation.y = rotation;
   }
 
