@@ -102,6 +102,40 @@ export class AssetLoader {
     return instances.rootNodes as AbstractMesh[];
   }
 
+  /**
+   * Instantiate a character from a cached container with unique meshes, skeleton, and animations.
+   * This is used for creating multiple instances of the same character model (e.g., squad members).
+   */
+  public instantiateCharacter(containerPath: string, instanceName: string): LoadedCharacterAssets | null {
+    const container = this.cache.get(containerPath);
+    if (!container) {
+      console.error(`Container not found in cache: ${containerPath}`);
+      return null;
+    }
+
+    const instances = container.instantiateModelsToScene(
+      (sourceName) => `${instanceName}_${sourceName}`,
+      false
+    );
+
+    if (!instances.rootNodes || instances.rootNodes.length === 0) {
+      console.error(`No root nodes created for ${instanceName}`);
+      return null;
+    }
+
+    const rootMesh = instances.rootNodes[0] as AbstractMesh;
+
+    // Get all child meshes from the root
+    const meshes: AbstractMesh[] = [rootMesh, ...rootMesh.getChildMeshes()];
+
+    return {
+      meshes,
+      rootMesh,
+      animationGroups: instances.animationGroups || [],
+      skeletons: instances.skeletons || []
+    };
+  }
+
   public async loadMultipleAssets(
     paths: string[],
     onProgress?: ProgressCallback

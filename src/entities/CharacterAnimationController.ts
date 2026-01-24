@@ -20,6 +20,7 @@ interface AnimationData {
 export class CharacterAnimationController {
   private scene: Scene;
   private assetLoader: AssetLoader;
+  private characterId: string;
   private animations: Map<AnimationState, AnimationData> = new Map();
   private currentState: AnimationState = AnimationState.IDLE;
   private activeAnimation: AnimationGroup | null = null;
@@ -28,21 +29,47 @@ export class CharacterAnimationController {
   private isTransitioning: boolean = false;
   private queuedState: AnimationState | null = null;
   private onAnimationEndCallback: (() => void) | null = null;
+  private ownedAnimationGroups: AnimationGroup[] = [];
 
-  constructor(scene: Scene, assetLoader: AssetLoader) {
+  constructor(scene: Scene, assetLoader: AssetLoader, characterId: string = 'player') {
     this.scene = scene;
     this.assetLoader = assetLoader;
+    this.characterId = characterId;
   }
 
   public async initialize(): Promise<{ rootMesh: AbstractMesh; skeleton: Skeleton | null }> {
-    const idleAssets = await this.assetLoader.loadCharacterWithAnimation(ASSET_PATHS.CHARACTER_IDLE);
-    this.rootMesh = idleAssets.rootMesh;
-    this.skeleton = idleAssets.skeletons[0] || null;
+    // Load the idle asset container first to ensure it's cached
+    const container = await this.assetLoader.loadAssetContainer(ASSET_PATHS.CHARACTER_IDLE);
 
-    if (idleAssets.animationGroups.length > 0) {
+    // Instantiate a unique copy for this character (same pattern as EnemyAnimationController)
+    const instances = container.instantiateModelsToScene(
+      (name) => `${this.characterId}_${name}`,
+      false,
+      { doNotInstantiate: false }
+    );
+
+    if (instances.rootNodes.length === 0) {
+      throw new Error('Failed to instantiate character model');
+    }
+
+    this.rootMesh = instances.rootNodes[0] as AbstractMesh;
+    this.skeleton = instances.skeletons[0] || null;
+
+    // Reset instanced mesh position to origin.
+    // Keep the authored rotation so model-forward stays aligned with movement.
+    this.rootMesh.position.setAll(0);
+
+    console.log(`CharacterAnimationController ${this.characterId}: created rootMesh "${this.rootMesh.name}", skeleton: ${this.skeleton?.name || 'none'}`);
+    console.log(`  rootNodes count: ${instances.rootNodes.length}, skeletons count: ${instances.skeletons.length}`);
+
+    // Store the idle animation group for this character
+    if (instances.animationGroups.length > 0) {
+      const idleAnimGroup = instances.animationGroups[0];
+      this.ownedAnimationGroups.push(idleAnimGroup);
+
       const idleConfig = getAnimationConfig(AnimationState.IDLE);
       this.animations.set(AnimationState.IDLE, {
-        group: idleAssets.animationGroups[0],
+        group: idleAnimGroup,
         config: {
           loop: idleConfig?.loop ?? true,
           speedRatio: idleConfig?.speedRatio ?? 1,
@@ -65,17 +92,30 @@ export class CharacterAnimationController {
 
     for (const config of animationsToLoad) {
       try {
-        const animGroups = await this.assetLoader.loadAnimationOnly(config.glbPath);
+        // Load the container for this animation
+        const container = await this.assetLoader.loadAssetContainer(config.glbPath);
 
-        if (animGroups.length > 0) {
-          const animGroup = animGroups[0];
+        if (container.animationGroups.length > 0) {
+          // Clone the animation group for this character
+          const sourceAnimGroup = container.animationGroups[0];
+          const clonedAnimGroup = sourceAnimGroup.clone(
+            `${this.characterId}_${config.state}`,
+            (oldTarget) => {
+              // Retarget to this character's skeleton
+              if (this.skeleton && oldTarget?.name) {
+                const bone = this.skeleton.bones.find(b => b.name === oldTarget.name);
+                if (bone) {
+                  return bone.getTransformNode() || oldTarget;
+                }
+              }
+              return oldTarget;
+            }
+          );
 
-          if (this.skeleton) {
-            this.retargetAnimationToSkeleton(animGroup);
-          }
+          this.ownedAnimationGroups.push(clonedAnimGroup);
 
           this.animations.set(config.state, {
-            group: animGroup,
+            group: clonedAnimGroup,
             config: {
               loop: config.loop,
               speedRatio: config.speedRatio,
@@ -85,20 +125,6 @@ export class CharacterAnimationController {
         }
       } catch (error) {
         console.error(`Failed to load animation ${config.state}:`, error);
-      }
-    }
-  }
-
-  private retargetAnimationToSkeleton(animGroup: AnimationGroup): void {
-    if (!this.skeleton) return;
-
-    for (const targetedAnim of animGroup.targetedAnimations) {
-      const boneName = targetedAnim.target?.name;
-      if (boneName) {
-        const bone = this.skeleton.bones.find(b => b.name === boneName);
-        if (bone) {
-          targetedAnim.target = bone.getTransformNode() || targetedAnim.target;
-        }
       }
     }
   }
@@ -251,6 +277,22 @@ export class CharacterAnimationController {
 
   public dispose(): void {
     this.stopAll();
+
+    // Dispose all owned animation groups
+    for (const animGroup of this.ownedAnimationGroups) {
+      animGroup.dispose();
+    }
+    this.ownedAnimationGroups = [];
+
+    // Dispose the root mesh and its children, but NOT the materials (they're shared)
+    if (this.rootMesh) {
+      const children = this.rootMesh.getChildMeshes();
+      for (const child of children) {
+        child.dispose(false, false);
+      }
+      this.rootMesh.dispose(false, false);
+    }
+
     this.animations.clear();
     this.rootMesh = null;
     this.skeleton = null;

@@ -17,10 +17,16 @@ import { AssetLoader, LoadProgress } from './core/AssetLoader';
 import { CameraSystem } from './systems/CameraSystem';
 import { InputManager } from './input/InputManager';
 import { Character } from './entities/Character';
+import { Enemy } from './entities/Enemy';
 import { CoverSystem } from './systems/CoverSystem';
 import { CoverObject } from './entities/CoverObject';
-import { GAME_CONSTANTS, ASSET_PATHS, COLORS } from './utils/Constants';
+import { NavigationSystem } from './systems/NavigationSystem';
+import { SquadManager } from './systems/SquadManager';
+import { SquadMember } from './entities/SquadMember';
+import { SquadPanel } from './ui/SquadPanel';
+import { GAME_CONSTANTS, ASSET_PATHS, REBEL_ASSET_PATHS } from './utils/Constants';
 import { CoverLevel } from './types/GameTypes';
+import { SquadOrderType } from './types/SquadTypes';
 
 export class Game {
   private engineWrapper: EngineWrapper;
@@ -29,12 +35,18 @@ export class Game {
   private cameraSystem: CameraSystem | null = null;
   private inputManager: InputManager | null = null;
   private player: Character | null = null;
+  private squadManager: SquadManager | null = null;
+  private squadPanel: SquadPanel | null = null;
   private coverSystem: CoverSystem | null = null;
   private shadowGenerator: ShadowGenerator | null = null;
+  private navigationSystem: NavigationSystem | null = null;
 
-  // Dummy targets for testing
-  private dummyTargets: { mesh: AbstractMesh; health: number; spawnPosition: Vector3; index: number }[] = [];
-  private selectedTarget: { mesh: AbstractMesh; health: number; spawnPosition: Vector3; index: number } | null = null;
+  // Meshes for navigation mesh generation
+  private navMeshSources: Mesh[] = [];
+
+  // Enemy targets
+  private enemies: Enemy[] = [];
+  private selectedEnemy: Enemy | null = null;
   private pendingRespawns: { position: Vector3; index: number; respawnTime: number }[] = [];
   private readonly RESPAWN_DELAY: number = 5000; // 5 seconds in milliseconds
   private readonly AIM_ANGLE_THRESHOLD: number = 15; // degrees - how accurate aim must be
@@ -68,16 +80,20 @@ export class Game {
     this.setupScene();
     this.setupLighting();
     this.createGround();
-    this.createTrench();
-    this.createRoom();
-    this.createDummyTargets();
 
     await this.loadAssets();
 
+    // Setup cover objects first so they can be added to navmesh
+    this.setupCover();
+
+    // Initialize navigation system after all geometry is created
+    await this.setupNavigation();
+
     await this.createPlayer();
+    await this.createSquad();
+    await this.createEnemies();
     this.setupCamera();
     this.setupInput();
-    this.setupCover();
 
     this.scene.onBeforeRenderObservable.add(() => {
       this.update();
@@ -123,61 +139,19 @@ export class Game {
     groundMaterial.diffuseTexture = diffuseTexture;
     groundMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
 
-    // Trench dimensions (must match createTrench)
-    const trenchX = -20;
-    const trenchLength = 20;
-    const trenchWidth = 3;
-    const halfGround = GAME_CONSTANTS.GROUND_SIZE / 2;
-
-    // Create ground sections around the trench gap
-    // Left section: everything to the left of the trench
-    const leftWidth = halfGround + (trenchX - trenchWidth / 2);
-    const groundLeft = MeshBuilder.CreateGround(
-      'groundLeft',
-      { width: leftWidth, height: GAME_CONSTANTS.GROUND_SIZE },
+    const ground = MeshBuilder.CreateGround(
+      'ground',
+      {
+        width: GAME_CONSTANTS.GROUND_SIZE,
+        height: GAME_CONSTANTS.GROUND_SIZE,
+        subdivisions: GAME_CONSTANTS.GROUND_SUBDIVISIONS
+      },
       this.scene
     );
-    groundLeft.position.x = -halfGround + leftWidth / 2;
-    groundLeft.material = groundMaterial;
-    groundLeft.receiveShadows = true;
-    groundLeft.checkCollisions = true;
-
-    // Right section: everything to the right of the trench
-    const rightWidth = halfGround - (trenchX + trenchWidth / 2);
-    const groundRight = MeshBuilder.CreateGround(
-      'groundRight',
-      { width: rightWidth, height: GAME_CONSTANTS.GROUND_SIZE },
-      this.scene
-    );
-    groundRight.position.x = halfGround - rightWidth / 2;
-    groundRight.material = groundMaterial;
-    groundRight.receiveShadows = true;
-    groundRight.checkCollisions = true;
-
-    // Front section: fills gap in front of trench (negative Z)
-    const frontDepth = halfGround - trenchLength / 2;
-    const groundFront = MeshBuilder.CreateGround(
-      'groundFront',
-      { width: trenchWidth, height: frontDepth },
-      this.scene
-    );
-    groundFront.position.x = trenchX;
-    groundFront.position.z = -halfGround + frontDepth / 2;
-    groundFront.material = groundMaterial;
-    groundFront.receiveShadows = true;
-    groundFront.checkCollisions = true;
-
-    // Back section: fills gap behind trench (positive Z)
-    const groundBack = MeshBuilder.CreateGround(
-      'groundBack',
-      { width: trenchWidth, height: frontDepth },
-      this.scene
-    );
-    groundBack.position.x = trenchX;
-    groundBack.position.z = halfGround - frontDepth / 2;
-    groundBack.material = groundMaterial;
-    groundBack.receiveShadows = true;
-    groundBack.checkCollisions = true;
+    ground.material = groundMaterial;
+    ground.receiveShadows = true;
+    ground.checkCollisions = true;
+    this.navMeshSources.push(ground);
   }
 
   private createTrench(): void {
@@ -258,6 +232,7 @@ export class Game {
     );
     leftBerm.material = dirtMaterial;
     leftBerm.receiveShadows = true;
+    this.navMeshSources.push(leftBerm);
 
     const rightBerm = MeshBuilder.CreateBox(
       'trenchRightBerm',
@@ -271,6 +246,7 @@ export class Game {
     );
     rightBerm.material = dirtMaterial;
     rightBerm.receiveShadows = true;
+    this.navMeshSources.push(rightBerm);
 
     // === SANDBAG ROWS on top of berms ===
     const sandbagHeight = 0.3;
@@ -376,6 +352,7 @@ export class Game {
     northWall.material = wallMaterial;
     northWall.receiveShadows = true;
     northWall.checkCollisions = true;
+    this.navMeshSources.push(northWall);
 
     // South wall (with doorway - split into two sections)
     const southWallLeftWidth = (roomSize - doorWidth) / 2;
@@ -396,6 +373,7 @@ export class Game {
     southWallLeft.material = wallMaterial;
     southWallLeft.receiveShadows = true;
     southWallLeft.checkCollisions = true;
+    this.navMeshSources.push(southWallLeft);
 
     const southWallRight = MeshBuilder.CreateBox(
       'roomSouthWallRight',
@@ -414,6 +392,7 @@ export class Game {
     southWallRight.material = wallMaterial;
     southWallRight.receiveShadows = true;
     southWallRight.checkCollisions = true;
+    this.navMeshSources.push(southWallRight);
 
     // East wall (full wall)
     const eastWall = MeshBuilder.CreateBox(
@@ -433,6 +412,7 @@ export class Game {
     eastWall.material = wallMaterial;
     eastWall.receiveShadows = true;
     eastWall.checkCollisions = true;
+    this.navMeshSources.push(eastWall);
 
     // West wall (full wall)
     const westWall = MeshBuilder.CreateBox(
@@ -452,6 +432,7 @@ export class Game {
     westWall.material = wallMaterial;
     westWall.receiveShadows = true;
     westWall.checkCollisions = true;
+    this.navMeshSources.push(westWall);
 
     // Room floor (slightly raised to distinguish from ground)
     const roomFloor = MeshBuilder.CreateGround(
@@ -475,6 +456,7 @@ export class Game {
     roomFloor.material = floorMaterial;
     roomFloor.receiveShadows = true;
     roomFloor.checkCollisions = true;
+    this.navMeshSources.push(roomFloor);
 
     // Add all walls to shadow casters
     if (this.shadowGenerator) {
@@ -486,126 +468,134 @@ export class Game {
     }
   }
 
-  private createDummyTargets(): void {
-    // Create enemy-like dummy targets for testing shooting
-    const targetPositions = [
-      new Vector3(8, 0, 0),
-      new Vector3(12, 0, 5),
-      new Vector3(-5, 0, 8)
-    ];
+  private async setupNavigation(): Promise<void> {
+    this.navigationSystem = new NavigationSystem(this.scene, 20, 0.6);
+    await this.navigationSystem.initialize();
 
-    // Enemy material - dark red/crimson for grimdark feel
-    const enemyMaterial = new StandardMaterial('enemyMaterial', this.scene);
-    enemyMaterial.diffuseColor = new Color3(0.5, 0.1, 0.1);
-    enemyMaterial.specularColor = new Color3(0.2, 0.2, 0.2);
+    // Create navmesh from ground/floor geometry only
+    this.navigationSystem.createNavMesh(this.navMeshSources);
 
-    // Highlight material for when targeted
-    const targetedMaterial = new StandardMaterial('targetedMaterial', this.scene);
-    targetedMaterial.diffuseColor = new Color3(0.8, 0.2, 0.2);
-    targetedMaterial.emissiveColor = new Color3(0.3, 0.05, 0.05);
-    targetedMaterial.specularColor = new Color3(0.3, 0.3, 0.3);
-
-    for (let i = 0; i < targetPositions.length; i++) {
-      const pos = targetPositions[i];
-
-      // Create a simple humanoid shape (body + head)
-      const body = MeshBuilder.CreateCylinder(
-        `dummy_body_${i}`,
-        { height: 1.5, diameter: 0.6, tessellation: 12 },
-        this.scene
-      );
-      body.position = new Vector3(pos.x, 0.75, pos.z);
-      body.material = enemyMaterial;
-      body.receiveShadows = true;
-      body.isPickable = true;
-      body.metadata = { type: 'enemy', index: i, targetedMaterial, originalMaterial: enemyMaterial };
-
-      const head = MeshBuilder.CreateSphere(
-        `dummy_head_${i}`,
-        { diameter: 0.4, segments: 12 },
-        this.scene
-      );
-      head.position = new Vector3(pos.x, 1.7, pos.z);
-      head.material = enemyMaterial;
-      head.receiveShadows = true;
-      head.isPickable = true;
-      head.parent = null; // Keep independent for picking
-      head.metadata = { type: 'enemy', index: i, parentBody: body };
-
-      // Add to shadow casters
-      if (this.shadowGenerator) {
-        this.shadowGenerator.addShadowCaster(body);
-        this.shadowGenerator.addShadowCaster(head);
+    // Add cargo containers as obstacles to carve out blocked areas
+    if (this.coverSystem) {
+      for (const cover of this.coverSystem.getCoverObjects()) {
+        const params = cover.getObstacleParams();
+        if (params) {
+          this.navigationSystem.addBoxObstacle(params.position, params.extent, params.angle);
+        }
       }
-
-      this.dummyTargets.push({ mesh: body, health: 100, spawnPosition: pos.clone(), index: i });
     }
   }
 
+  // Different patrol routes for each enemy
+  // Note: Avoid cargo container positions at (10, 0, 10) and (-10, 0, -10)
+
+  // Route 1: East side patrol (right side of map)
+  private readonly PATROL_ROUTE_EAST: Vector3[] = [
+    new Vector3(15, 0, 12),
+    new Vector3(15, 0, -12),
+    new Vector3(5, 0, -12),
+    new Vector3(5, 0, 12)
+  ];
+
+  // Route 2: West side patrol (left side of map)
+  private readonly PATROL_ROUTE_WEST: Vector3[] = [
+    new Vector3(-15, 0, -12),
+    new Vector3(-15, 0, 12),
+    new Vector3(-5, 0, 12),
+    new Vector3(-5, 0, -12)
+  ];
+
+  // Route 3: North-South center patrol
+  private readonly PATROL_ROUTE_CENTER: Vector3[] = [
+    new Vector3(0, 0, 15),
+    new Vector3(0, 0, -15)
+  ];
+
+  private async createEnemies(): Promise<void> {
+    // Enemy 1: Patrols east side of map
+    const patrolEast = await this.spawnEnemy(new Vector3(15, 0, 0), 0, 1);
+    patrolEast.setPatrolWaypoints(this.PATROL_ROUTE_EAST, 0);
+
+    // Enemy 2: Patrols west side of map
+    const patrolWest = await this.spawnEnemy(new Vector3(-15, 0, 0), Math.PI, 2);
+    patrolWest.setPatrolWaypoints(this.PATROL_ROUTE_WEST, 0);
+
+    // Enemy 3: Random wanderer in center area
+    const wanderer = await this.spawnEnemy(new Vector3(0, 0, 5), 0, 3);
+    wanderer.startWandering(new Vector3(0, 0, 0), 12);
+  }
+
   /**
-   * Spawn a single dummy target at the given position
+   * Spawn a single enemy at the given position
    */
-  private spawnDummyTarget(pos: Vector3, index: number): void {
-    // Get or create materials
-    let enemyMaterial = this.scene.getMaterialByName('enemyMaterial') as StandardMaterial;
-    let targetedMaterial = this.scene.getMaterialByName('targetedMaterial') as StandardMaterial;
+  private async spawnEnemy(pos: Vector3, rotation: number, index: number): Promise<Enemy> {
+    const enemy = new Enemy(this.scene, this.assetLoader, `enemy_${index}`, index);
+    await enemy.initialize();
 
-    if (!enemyMaterial) {
-      enemyMaterial = new StandardMaterial('enemyMaterial', this.scene);
-      enemyMaterial.diffuseColor = new Color3(0.5, 0.1, 0.1);
-      enemyMaterial.specularColor = new Color3(0.2, 0.2, 0.2);
+    // Connect enemy to navigation system for pathfinding
+    if (this.navigationSystem) {
+      enemy.setNavigationSystem(this.navigationSystem);
+      enemy.setPosition(pos);
+      enemy.setRotation(rotation);
+      enemy.registerAsAgent();
+    } else {
+      enemy.setPosition(pos);
+      enemy.setRotation(rotation);
     }
 
-    if (!targetedMaterial) {
-      targetedMaterial = new StandardMaterial('targetedMaterial', this.scene);
-      targetedMaterial.diffuseColor = new Color3(0.8, 0.2, 0.2);
-      targetedMaterial.emissiveColor = new Color3(0.3, 0.05, 0.05);
-      targetedMaterial.specularColor = new Color3(0.3, 0.3, 0.3);
-    }
-
-    // Create body
-    const body = MeshBuilder.CreateCylinder(
-      `dummy_body_${index}`,
-      { height: 1.5, diameter: 0.6, tessellation: 12 },
-      this.scene
-    );
-    body.position = new Vector3(pos.x, 0.75, pos.z);
-    body.material = enemyMaterial;
-    body.receiveShadows = true;
-    body.isPickable = true;
-    body.metadata = { type: 'enemy', index: index, targetedMaterial, originalMaterial: enemyMaterial };
-
-    // Create head
-    const head = MeshBuilder.CreateSphere(
-      `dummy_head_${index}`,
-      { diameter: 0.4, segments: 12 },
-      this.scene
-    );
-    head.position = new Vector3(pos.x, 1.7, pos.z);
-    head.material = enemyMaterial;
-    head.receiveShadows = true;
-    head.isPickable = true;
-    head.parent = null;
-    head.metadata = { type: 'enemy', index: index, parentBody: body };
-
-    // Add to shadow casters
+    // Add shadow casters for enemy meshes
     if (this.shadowGenerator) {
-      this.shadowGenerator.addShadowCaster(body);
-      this.shadowGenerator.addShadowCaster(head);
+      const meshes = enemy.getAllMeshes();
+      for (const mesh of meshes) {
+        this.shadowGenerator.addShadowCaster(mesh);
+        mesh.receiveShadows = true;
+      }
     }
 
-    this.dummyTargets.push({ mesh: body, health: 100, spawnPosition: pos.clone(), index: index });
+    // Set up death callback for respawning
+    enemy.onDeath(() => {
+      const spawnPos = enemy.getSpawnPosition();
+      const enemyIndex = enemy.getIndex();
+
+      // Remove from enemies array
+      const idx = this.enemies.indexOf(enemy);
+      if (idx > -1) {
+        this.enemies.splice(idx, 1);
+      }
+
+      // Clear selection if this was the selected enemy
+      if (this.selectedEnemy === enemy) {
+        this.selectedEnemy = null;
+      }
+
+      // Schedule respawn - index 1 is the patrolling enemy
+      this.pendingRespawns.push({
+        position: spawnPos,
+        index: enemyIndex,
+        respawnTime: performance.now() + this.RESPAWN_DELAY
+      });
+
+      console.log(`Enemy ${enemyIndex} destroyed! Will respawn in 5 seconds.`);
+
+      // Dispose after a short delay to let death animation show
+      setTimeout(() => {
+        enemy.dispose();
+      }, 1500);
+    });
+
+    this.enemies.push(enemy);
+    return enemy;
   }
 
   /**
    * Check if player is aiming at the selected target
    * Returns true if the angle between player's forward direction and target is within threshold
    */
-  private isAimingAtTarget(target: { mesh: AbstractMesh }): boolean {
+  private isAimingAtTarget(enemy: Enemy): boolean {
     if (!this.player) return false;
 
     const playerPos = this.player.getPosition();
-    const targetPos = target.mesh.position;
+    const targetPos = enemy.getPosition();
 
     // Get direction from player to target (on XZ plane)
     const directionToTarget = new Vector3(
@@ -626,16 +616,62 @@ export class Game {
   }
 
   /**
+   * Check if a squad member is aiming at the selected target
+   */
+  private isAimingAtTargetFromMember(member: SquadMember, enemy: Enemy): boolean {
+    const memberPos = member.getPosition();
+    const targetPos = enemy.getPosition();
+
+    // Get direction from member to target (on XZ plane)
+    const directionToTarget = new Vector3(
+      targetPos.x - memberPos.x,
+      0,
+      targetPos.z - memberPos.z
+    ).normalize();
+
+    // Get member's forward direction
+    const memberForward = member.getForwardDirection();
+
+    // Calculate angle between them using dot product
+    const dot = Vector3.Dot(memberForward, directionToTarget);
+    const angleRad = Math.acos(Math.min(1, Math.max(-1, dot)));
+    const angleDeg = angleRad * (180 / Math.PI);
+
+    return angleDeg <= this.AIM_ANGLE_THRESHOLD;
+  }
+
+  /**
    * Process pending target respawns
    */
-  private processRespawns(): void {
+  private async processRespawns(): Promise<void> {
     const currentTime = performance.now();
     const respawned: number[] = [];
 
     for (let i = 0; i < this.pendingRespawns.length; i++) {
       const respawn = this.pendingRespawns[i];
       if (currentTime >= respawn.respawnTime) {
-        this.spawnDummyTarget(respawn.position, respawn.index);
+        // Spawn with default rotation facing the player spawn point
+        const rotationToCenter = Math.atan2(-respawn.position.x, -respawn.position.z);
+
+        const enemy = await this.spawnEnemy(respawn.position, rotationToCenter, respawn.index);
+
+        // Restore behavior based on enemy index
+        switch (respawn.index) {
+          case 1:
+            // East side patrol
+            enemy.setPatrolWaypoints(this.PATROL_ROUTE_EAST, 0);
+            break;
+          case 2:
+            // West side patrol
+            enemy.setPatrolWaypoints(this.PATROL_ROUTE_WEST, 0);
+            break;
+          case 3:
+            // Random wanderer
+            enemy.startWandering(new Vector3(0, 0, 0), 12);
+            break;
+          // Index 0 is idle guard - no patrol
+        }
+
         respawned.push(i);
         console.log(`Enemy ${respawn.index} respawned!`);
       }
@@ -649,6 +685,7 @@ export class Game {
 
   private async loadAssets(): Promise<void> {
     const assetsToLoad = [
+      // Player (shock troops) assets
       ASSET_PATHS.CHARACTER_IDLE,
       ASSET_PATHS.CHARACTER_WALK,
       ASSET_PATHS.CHARACTER_RUN,
@@ -656,7 +693,15 @@ export class Game {
       ASSET_PATHS.CHARACTER_COVER,
       ASSET_PATHS.CHARACTER_MELEE,
       ASSET_PATHS.CHARACTER_DEATH,
-      ASSET_PATHS.CARGO_CONTAINER
+      ASSET_PATHS.CARGO_CONTAINER,
+      // Enemy (rebel) assets
+      REBEL_ASSET_PATHS.IDLE,
+      REBEL_ASSET_PATHS.WALK,
+      REBEL_ASSET_PATHS.RUN,
+      REBEL_ASSET_PATHS.SHOOT,
+      REBEL_ASSET_PATHS.COVER,
+      REBEL_ASSET_PATHS.MELEE,
+      REBEL_ASSET_PATHS.DEATH
     ];
 
     await this.assetLoader.loadMultipleAssets(assetsToLoad, (progress) => {
@@ -665,30 +710,74 @@ export class Game {
   }
 
   private async createPlayer(): Promise<void> {
-    this.player = new Character(this.scene, this.assetLoader, 'player');
-    await this.player.initialize();
+    // Legacy player creation - now handled by SquadManager
+    // Keeping method for backwards compatibility but not creating player
+    // since squad system is the primary control mechanism
+  }
 
-    this.player.setPosition(new Vector3(0, 0, 0));
+  private async createSquad(): Promise<void> {
+    this.squadManager = new SquadManager(
+      this.scene,
+      this.assetLoader,
+      this.navigationSystem || undefined
+    );
 
-    if (this.shadowGenerator && this.player.getRootMesh()) {
-      const meshes = this.player.getAllMeshes();
+    // Create squad at spawn position (offset from single player)
+    const squadSpawnPosition = new Vector3(5, 0, 5);
+    await this.squadManager.createSquad(squadSpawnPosition);
+
+    // Add shadow casters for all squad members
+    if (this.shadowGenerator) {
+      const meshes = this.squadManager.getAllMeshes();
       for (const mesh of meshes) {
         this.shadowGenerator.addShadowCaster(mesh);
+        if (mesh.receiveShadows !== undefined) {
+          mesh.receiveShadows = true;
+        }
       }
     }
+
+    // Set up callbacks
+    this.squadManager.setCallbacks({
+      onMemberSelected: (member: SquadMember) => {
+        console.log(`Selected: ${member.getDisplayName()}`);
+        // Update camera to follow new member
+        if (this.cameraSystem) {
+          const rootMesh = member.getRootMesh();
+          if (rootMesh) {
+            this.cameraSystem.setTarget(rootMesh);
+          }
+        }
+      },
+      onMemberDied: (member: SquadMember) => {
+        console.log(`${member.getDisplayName()} has been killed!`);
+      }
+    });
+
+    // Create squad panel UI
+    this.squadPanel = new SquadPanel(this.scene, this.squadManager);
   }
 
   private setupCamera(): void {
-    if (!this.player) return;
-
     this.cameraSystem = new CameraSystem(
       this.scene,
       this.engineWrapper.getCanvas()
     );
 
-    const playerRoot = this.player.getRootMesh();
-    if (playerRoot) {
-      this.cameraSystem.setTarget(playerRoot);
+    // Set camera to follow active squad member if available, otherwise player
+    if (this.squadManager) {
+      const activeMember = this.squadManager.getActiveMember();
+      if (activeMember) {
+        const rootMesh = activeMember.getRootMesh();
+        if (rootMesh) {
+          this.cameraSystem.setTarget(rootMesh);
+        }
+      }
+    } else if (this.player) {
+      const playerRoot = this.player.getRootMesh();
+      if (playerRoot) {
+        this.cameraSystem.setTarget(playerRoot);
+      }
     }
   }
 
@@ -708,80 +797,75 @@ export class Game {
         }
       }
     };
+
+    // Setup keyboard shortcuts for squad selection
+    this.scene.onKeyboardObservable.add((kbInfo) => {
+      if (kbInfo.type === 1) { // Key down
+        const key = kbInfo.event.key;
+
+        // Number keys 1-5 to select squad members
+        if (key >= '1' && key <= '5' && this.squadManager) {
+          this.squadManager.selectByNumber(parseInt(key));
+        }
+
+        // Tab to cycle through squad
+        if (key === 'Tab' && this.squadManager) {
+          kbInfo.event.preventDefault();
+          this.squadManager.selectNext();
+        }
+
+        // Order shortcuts (when not typing)
+        if (this.squadManager) {
+          switch (key.toLowerCase()) {
+            case 'h': // Hold
+              this.squadManager.issueOrderToAll(SquadOrderType.HOLD);
+              console.log('Squad: HOLD position');
+              break;
+            case 'g': // Follow/Regroup
+              this.squadManager.issueOrderToAll(SquadOrderType.FOLLOW);
+              console.log('Squad: FOLLOW leader');
+              break;
+            case 'c': // Take cover
+              this.squadManager.issueOrderToAll(SquadOrderType.TAKE_COVER);
+              console.log('Squad: TAKE COVER');
+              break;
+          }
+        }
+      }
+    });
   }
 
   private selectTarget(mesh: AbstractMesh): void {
-    // Deselect previous target
-    if (this.selectedTarget) {
-      const prevMeta = this.selectedTarget.mesh.metadata;
-      if (prevMeta && prevMeta.originalMaterial) {
-        this.selectedTarget.mesh.material = prevMeta.originalMaterial;
-      }
-    }
-
-    // Find the target data
+    // Find the enemy from the mesh metadata
     const metadata = mesh.metadata;
-    let targetMesh = mesh;
-
-    // If we clicked the head, get the parent body
-    if (metadata.parentBody) {
-      targetMesh = metadata.parentBody;
+    if (!metadata || !metadata.enemyRef) {
+      return;
     }
 
-    // Find in dummyTargets array
-    const targetData = this.dummyTargets.find(t => t.mesh === targetMesh);
-    if (targetData) {
-      this.selectedTarget = targetData;
+    const enemy = metadata.enemyRef as Enemy;
 
-      // Apply targeted material (highlight)
-      const meta = targetMesh.metadata;
-      if (meta && meta.targetedMaterial) {
-        targetMesh.material = meta.targetedMaterial;
-      }
-
-      console.log(`Target selected: Enemy ${meta?.index}, Health: ${targetData.health}`);
+    // Check if enemy is still alive
+    if (!enemy.isEnemyAlive()) {
+      return;
     }
+
+    this.selectedEnemy = enemy;
+    console.log(`Target selected: Enemy ${enemy.getIndex()}, Health: ${enemy.getHealth()}`);
   }
 
   private damageSelectedTarget(damage: number): void {
-    if (!this.selectedTarget) {
+    if (!this.selectedEnemy) {
       console.log('No target selected!');
       return;
     }
 
-    this.selectedTarget.health -= damage;
-    console.log(`Hit! Enemy health: ${this.selectedTarget.health}`);
-
-    if (this.selectedTarget.health <= 0) {
-      // Target destroyed
-      console.log('Enemy destroyed! Will respawn in 5 seconds.');
-      const mesh = this.selectedTarget.mesh;
-      const metadata = mesh.metadata;
-      const spawnPosition = this.selectedTarget.spawnPosition;
-      const targetIndex = this.selectedTarget.index;
-
-      // Find and remove the head too
-      const headMesh = this.scene.getMeshByName(`dummy_head_${metadata?.index}`);
-      if (headMesh) {
-        headMesh.dispose();
-      }
-
-      // Remove from targets array
-      const index = this.dummyTargets.indexOf(this.selectedTarget);
-      if (index > -1) {
-        this.dummyTargets.splice(index, 1);
-      }
-
-      // Schedule respawn
-      this.pendingRespawns.push({
-        position: spawnPosition,
-        index: targetIndex,
-        respawnTime: performance.now() + this.RESPAWN_DELAY
-      });
-
-      mesh.dispose();
-      this.selectedTarget = null;
+    if (!this.selectedEnemy.isEnemyAlive()) {
+      this.selectedEnemy = null;
+      return;
     }
+
+    this.selectedEnemy.takeDamage(damage);
+    console.log(`Hit! Enemy health: ${this.selectedEnemy.getHealth()}`);
   }
 
   private setupCover(): void {
@@ -821,6 +905,9 @@ export class Game {
         }
       }
 
+      // Note: Do NOT add collision mesh to navMeshSources - those define WALKABLE surfaces
+      // Instead, we add cover objects as dynamic obstacles in setupNavigation()
+
       this.coverSystem.addCoverObject(coverObject);
     }
   }
@@ -848,22 +935,37 @@ export class Game {
     const deltaTime = (currentTime - this.lastTime) / 1000;
     this.lastTime = currentTime;
 
-    if (this.inputManager && this.player) {
+    if (this.inputManager) {
       const movement = this.inputManager.getMovementVector();
       const isSprinting = this.inputManager.isActionPressed('sprint');
       const isShooting = this.inputManager.isActionJustPressed('shoot');
       const isMelee = this.inputManager.isActionJustPressed('melee');
       const isCover = this.inputManager.isActionJustPressed('cover');
 
-      this.player.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
-      this.player.update(deltaTime);
+      // Route input to squad manager (active member)
+      if (this.squadManager) {
+        this.squadManager.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
 
-      // Damage selected target when shooting - only if aiming at it
-      if (isShooting && this.selectedTarget) {
-        if (this.isAimingAtTarget(this.selectedTarget)) {
-          this.damageSelectedTarget(25); // 25 damage per shot, 4 shots to kill
-        } else {
-          console.log('Missed! Not aiming at target.');
+        // Damage selected target when shooting - only if aiming at it
+        const activeMember = this.squadManager.getActiveMember();
+        if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive() && activeMember) {
+          if (this.isAimingAtTargetFromMember(activeMember, this.selectedEnemy)) {
+            this.damageSelectedTarget(25);
+          } else {
+            console.log('Missed! Not aiming at target.');
+          }
+        }
+      } else if (this.player) {
+        // Fallback to legacy player if no squad
+        this.player.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
+        this.player.update(deltaTime);
+
+        if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive()) {
+          if (this.isAimingAtTarget(this.selectedEnemy)) {
+            this.damageSelectedTarget(25);
+          } else {
+            console.log('Missed! Not aiming at target.');
+          }
         }
       }
 
@@ -884,6 +986,16 @@ export class Game {
       this.cameraSystem.update(deltaTime);
     }
 
+    // Update squad
+    if (this.squadManager) {
+      this.squadManager.update(deltaTime);
+    }
+
+    // Update enemies
+    for (const enemy of this.enemies) {
+      enemy.update(deltaTime);
+    }
+
     // Process any pending target respawns
     this.processRespawns();
   }
@@ -894,6 +1006,10 @@ export class Game {
 
   public getPlayer(): Character | null {
     return this.player;
+  }
+
+  public getSquadManager(): SquadManager | null {
+    return this.squadManager;
   }
 
   public getCoverSystem(): CoverSystem | null {
@@ -907,8 +1023,25 @@ export class Game {
       this.player.dispose();
     }
 
+    if (this.squadManager) {
+      this.squadManager.dispose();
+    }
+
+    if (this.squadPanel) {
+      this.squadPanel.dispose();
+    }
+
+    for (const enemy of this.enemies) {
+      enemy.dispose();
+    }
+    this.enemies = [];
+
     if (this.coverSystem) {
       this.coverSystem.dispose();
+    }
+
+    if (this.navigationSystem) {
+      this.navigationSystem.dispose();
     }
 
     if (this.inputManager) {

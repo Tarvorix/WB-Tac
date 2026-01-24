@@ -45,7 +45,15 @@ export const GAME_CONSTANTS = {
   ACTION_BUTTON_SMALL_SIZE_MOBILE: 50,
 
   // Screen width threshold for mobile sizing (iPhone ~390px, iPad ~768px+)
-  MOBILE_WIDTH_THRESHOLD: 500
+  MOBILE_WIDTH_THRESHOLD: 500,
+
+  // Squad panel UI sizes
+  SQUAD_PANEL_HEIGHT: 100,
+  SQUAD_PANEL_HEIGHT_MOBILE: 85,
+  MEMBER_CARD_WIDTH: 90,
+  MEMBER_CARD_WIDTH_MOBILE: 65,
+  MEMBER_CARD_HEIGHT: 90,
+  MEMBER_CARD_HEIGHT_MOBILE: 75
 } as const;
 
 export const ASSET_PATHS = {
@@ -57,6 +65,16 @@ export const ASSET_PATHS = {
   CHARACTER_MELEE: 'models/shock_troops_Melee.glb',
   CHARACTER_DEATH: 'models/shock_troops_Death.glb',
   CARGO_CONTAINER: 'models/Cargo_Container.glb'
+} as const;
+
+export const REBEL_ASSET_PATHS = {
+  IDLE: 'models/rebel_Idle.glb',
+  WALK: 'models/rebel_Walk.glb',
+  RUN: 'models/rebel_Run.glb',
+  SHOOT: 'models/rebel_Shoot.glb',
+  COVER: 'models/rebel_Cover.glb',
+  MELEE: 'models/rebel_Melee.glb',
+  DEATH: 'models/rebel_Death.glb'
 } as const;
 
 export const COLORS = {

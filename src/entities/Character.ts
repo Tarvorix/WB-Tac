@@ -48,7 +48,7 @@ export class Character {
     this.name = name;
 
     this.rootNode = new TransformNode(`${name}_root`, scene);
-    this.animationController = new CharacterAnimationController(scene, assetLoader);
+    this.animationController = new CharacterAnimationController(scene, assetLoader, name);
     this.stats = createDefaultCharacterStats();
   }
 
@@ -307,31 +307,9 @@ export class Character {
   }
 
   /**
-   * Calculate the ground height at a given X,Z position, accounting for trench
+   * Calculate the ground height at a given X,Z position.
    */
-  private getGroundHeight(x: number, z: number): number {
-    const trenchMinX = Character.TRENCH_X - Character.TRENCH_WIDTH / 2;
-    const trenchMaxX = Character.TRENCH_X + Character.TRENCH_WIDTH / 2;
-    const trenchMinZ = -Character.TRENCH_LENGTH / 2;
-    const trenchMaxZ = Character.TRENCH_LENGTH / 2;
-    const rampStartZ = trenchMaxZ;
-    const rampEndZ = trenchMaxZ + Character.RAMP_LENGTH;
-
-    // Check if in trench X bounds
-    if (x >= trenchMinX && x <= trenchMaxX) {
-      // Inside the main trench area
-      if (z >= trenchMinZ && z <= trenchMaxZ) {
-        return -Character.TRENCH_DEPTH;
-      }
-      // On the entry ramp (positive Z side)
-      if (z > rampStartZ && z < rampEndZ) {
-        // Linear interpolation from trench depth to ground level
-        const rampProgress = (z - rampStartZ) / Character.RAMP_LENGTH;
-        return -Character.TRENCH_DEPTH * (1 - rampProgress);
-      }
-    }
-
-    // Default ground level
+  private getGroundHeight(_x: number, _z: number): number {
     return 0;
   }
 

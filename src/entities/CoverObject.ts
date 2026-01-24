@@ -118,10 +118,8 @@ export class CoverObject {
 
     for (const mesh of this.meshes) {
       const bounds = mesh.getBoundingInfo();
-      const worldMatrix = mesh.getWorldMatrix();
-
-      const min = Vector3.TransformCoordinates(bounds.boundingBox.minimumWorld, worldMatrix);
-      const max = Vector3.TransformCoordinates(bounds.boundingBox.maximumWorld, worldMatrix);
+      const min = bounds.boundingBox.minimumWorld;
+      const max = bounds.boundingBox.maximumWorld;
 
       minX = Math.min(minX, min.x, max.x);
       minY = Math.min(minY, min.y, max.y);
@@ -167,7 +165,18 @@ export class CoverObject {
       (min.z + max.z) / 2
     );
 
-    // Make invisible but enable collision
+    // Compute world matrix and bake it into vertices
+    // This is CRITICAL for navmesh generation - Recast uses raw vertex data
+    // and doesn't account for mesh transforms
+    this.collisionMesh.computeWorldMatrix(true);
+    this.collisionMesh.bakeCurrentTransformIntoVertices();
+
+    // After baking, the position transform is now in the vertices, so reset position to origin
+    // and refresh bounding info to reflect the actual vertex positions
+    this.collisionMesh.position = Vector3.Zero();
+    this.collisionMesh.computeWorldMatrix(true);
+    this.collisionMesh.refreshBoundingInfo();
+
     this.collisionMesh.isVisible = false;
     this.collisionMesh.isPickable = false;
     this.collisionMesh.checkCollisions = true;
@@ -258,6 +267,47 @@ export class CoverObject {
 
   public getName(): string {
     return this.name;
+  }
+
+  /**
+   * Get the collision mesh for navigation obstacle purposes
+   */
+  public getCollisionMesh(): Mesh | null {
+    return this.collisionMesh;
+  }
+
+  /**
+   * Get obstacle parameters for navigation system (position, extent, rotation)
+   * IMPORTANT: Recast's addBoxObstacle expects:
+   * - position: CENTER of the box (not base)
+   * - extent: HALF-extents (not full dimensions)
+   */
+  public getObstacleParams(): { position: Vector3; extent: Vector3; angle: number } | null {
+    if (!this.boundingInfo) return null;
+
+    const min = this.boundingInfo.boundingBox.minimumWorld;
+    const max = this.boundingInfo.boundingBox.maximumWorld;
+
+    // Calculate CENTER position (not base!)
+    const position = new Vector3(
+      (min.x + max.x) / 2,
+      (min.y + max.y) / 2,  // CENTER, not base
+      (min.z + max.z) / 2
+    );
+
+    // Calculate HALF-extents (not full dimensions!) with margin
+    const margin = 0.3;
+    const extent = new Vector3(
+      (max.x - min.x) / 2 + margin,  // Half-width + margin
+      (max.y - min.y) / 2 + margin,  // Half-height + margin
+      (max.z - min.z) / 2 + margin   // Half-depth + margin
+    );
+
+    return {
+      position,
+      extent,
+      angle: this.config.rotation
+    };
   }
 
   public containsPoint(point: Vector3, margin: number = 0): boolean {
