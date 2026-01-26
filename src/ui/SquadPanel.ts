@@ -32,6 +32,10 @@ interface FormationButton {
   formation: FormationType;
 }
 
+interface SquadPanelCallbacks {
+  onPlanningModeChanged?: () => void;
+}
+
 /**
  * Squad status panel UI showing all squad members and order buttons
  */
@@ -39,22 +43,26 @@ export class SquadPanel {
   private scene: Scene;
   private squadManager: SquadManager;
   private guiTexture: AdvancedDynamicTexture;
+  private callbacks: SquadPanelCallbacks = {};
 
   private mainContainer: Rectangle;
   private memberCards: Map<string, MemberCard> = new Map();
   private orderButtons: OrderButton[] = [];
+  private planButton: Button | null = null;
   private orderPanelWidth: number = 0;
   private formationButtons: FormationButton[] = [];
   private formationPanelWidth: number = 0;
+  private isPlanningMode: boolean = false;
 
   private isMobile: boolean = false;
   private cardWidth: number = 90;
   private cardHeight: number = 90;
   private panelHeight: number = 100;
 
-  constructor(scene: Scene, squadManager: SquadManager) {
+  constructor(scene: Scene, squadManager: SquadManager, callbacks?: SquadPanelCallbacks) {
     this.scene = scene;
     this.squadManager = squadManager;
+    this.callbacks = callbacks || {};
 
     this.calculateResponsiveSizes();
 
@@ -143,13 +151,13 @@ export class SquadPanel {
     });
 
     container.onPointerEnterObservable.add(() => {
-      if (!member.isUnderPlayerControl()) {
+      if (!member.isUnderPlayerControl() && !member.isUnitSelected()) {
         container.background = 'rgba(50, 50, 50, 0.9)';
       }
     });
 
     container.onPointerOutObservable.add(() => {
-      if (!member.isUnderPlayerControl()) {
+      if (!member.isUnderPlayerControl() && !member.isUnitSelected()) {
         container.background = 'rgba(30, 30, 30, 0.9)';
       }
     });
@@ -220,9 +228,10 @@ export class SquadPanel {
     ];
 
     const buttonWidth = this.isMobile ? 45 : 55;
-    const buttonHeight = this.isMobile ? 35 : 40;
+    const buttonHeight = this.isMobile ? 26 : 32;
     const buttonPadding = this.isMobile ? 4 : 6;
     const titleHeight = this.isMobile ? 12 : 14;
+    const planButtonHeight = this.isMobile ? 18 : 22;
 
     // Create order panel on the right side
     this.orderPanelWidth = (buttonWidth * 2) + buttonPadding;
@@ -235,6 +244,15 @@ export class SquadPanel {
     orderPanel.thickness = 0;
     this.mainContainer.addControl(orderPanel);
 
+    const layoutGrid = new Grid('orderPanelLayout');
+    layoutGrid.width = '100%';
+    layoutGrid.height = '100%';
+    layoutGrid.addColumnDefinition(1);
+    layoutGrid.addRowDefinition(titleHeight, true);
+    layoutGrid.addRowDefinition(Math.max(0, this.panelHeight - titleHeight - planButtonHeight), true);
+    layoutGrid.addRowDefinition(planButtonHeight, true);
+    orderPanel.addControl(layoutGrid);
+
     // Title
     const titleText = new TextBlock('orderTitle');
     titleText.text = 'ORDERS';
@@ -243,18 +261,17 @@ export class SquadPanel {
     titleText.height = `${titleHeight}px`;
     titleText.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     titleText.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
-    orderPanel.addControl(titleText);
+    layoutGrid.addControl(titleText, 0, 0);
 
-    const gridHeight = Math.max(0, this.panelHeight - titleHeight);
     const buttonsGrid = new Grid('orderButtonsGrid');
     buttonsGrid.width = '100%';
-    buttonsGrid.height = `${gridHeight}px`;
-    buttonsGrid.verticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
+    buttonsGrid.height = '100%';
+    buttonsGrid.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
     buttonsGrid.addRowDefinition(buttonHeight, true);
     buttonsGrid.addRowDefinition(buttonHeight, true);
     buttonsGrid.addColumnDefinition(buttonWidth, true);
     buttonsGrid.addColumnDefinition(buttonWidth, true);
-    orderPanel.addControl(buttonsGrid);
+    layoutGrid.addControl(buttonsGrid, 1, 0);
 
     // Create buttons
     for (let i = 0; i < orders.length; i++) {
@@ -292,6 +309,33 @@ export class SquadPanel {
         orderType: orderConfig.type
       });
     }
+
+    const planButton = Button.CreateSimpleButton('plan_button', 'PLAN');
+    planButton.width = '100%';
+    planButton.height = `${Math.max(10, planButtonHeight - buttonPadding)}px`;
+    planButton.color = 'white';
+    planButton.background = 'rgba(120, 80, 0, 0.85)';
+    planButton.fontSize = this.isMobile ? 9 : 11;
+    planButton.fontWeight = 'bold';
+    planButton.cornerRadius = 3;
+    planButton.thickness = 1;
+    planButton.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    planButton.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+
+    planButton.onPointerClickObservable.add(() => {
+      this.callbacks.onPlanningModeChanged?.();
+    });
+
+    planButton.onPointerEnterObservable.add(() => {
+      planButton.alpha = 0.85;
+    });
+
+    planButton.onPointerOutObservable.add(() => {
+      planButton.alpha = 1;
+    });
+
+    layoutGrid.addControl(planButton, 2, 0);
+    this.planButton = planButton;
   }
 
   private createFormationButtons(): void {
@@ -377,12 +421,23 @@ export class SquadPanel {
   private onMemberCardClicked(memberId: string): void {
     const member = this.squadManager.getMember(memberId);
     if (member && member.isAlive()) {
-      this.squadManager.selectMember(memberId);
+      const currentSelectedId = this.squadManager.getCommandSelectedMemberId();
+      if (currentSelectedId === memberId) {
+        this.squadManager.selectCommandMember(null);
+      } else {
+        this.squadManager.selectCommandMember(memberId);
+      }
     }
   }
 
   private onOrderButtonClicked(orderType: SquadOrderType): void {
-    this.squadManager.issueOrderToAll(orderType);
+    const selectedMemberId = this.squadManager.getCommandSelectedMemberId();
+    const activeMemberId = this.squadManager.getActiveMemberId();
+    if (selectedMemberId && selectedMemberId !== activeMemberId) {
+      this.squadManager.issueOrderToMember(selectedMemberId, orderType);
+    } else {
+      this.squadManager.issueOrderToAll(orderType);
+    }
 
     // Visual feedback
     console.log(`Order issued: ${orderType.toUpperCase()}`);
@@ -410,19 +465,31 @@ export class SquadPanel {
       card.statusText.color = this.getStatusColor(status);
 
       // Update card border for active member
-      if (member.isUnderPlayerControl()) {
-        card.container.color = 'gold';
-        card.container.thickness = 3;
-        card.container.background = 'rgba(50, 40, 0, 0.9)';
-      } else if (!member.isAlive()) {
+      if (!member.isAlive()) {
         card.container.color = 'darkred';
         card.container.thickness = 2;
         card.container.background = 'rgba(40, 0, 0, 0.9)';
+      } else if (member.isUnderPlayerControl()) {
+        card.container.color = 'gold';
+        card.container.thickness = 3;
+        card.container.background = 'rgba(50, 40, 0, 0.9)';
+      } else if (member.isUnitSelected()) {
+        card.container.color = 'lime';
+        card.container.thickness = 2;
+        card.container.background = 'rgba(0, 40, 0, 0.9)';
       } else {
         card.container.color = 'gray';
         card.container.thickness = 2;
         card.container.background = 'rgba(30, 30, 30, 0.9)';
       }
+    }
+  }
+
+  public setPlanningMode(active: boolean): void {
+    this.isPlanningMode = active;
+    if (this.planButton) {
+      this.planButton.background = active ? 'rgba(200, 120, 0, 0.9)' : 'rgba(120, 80, 0, 0.85)';
+      this.planButton.color = active ? 'white' : 'white';
     }
   }
 
@@ -481,6 +548,11 @@ export class SquadPanel {
       orderButton.button.dispose();
     }
     this.orderButtons = [];
+
+    if (this.planButton) {
+      this.planButton.dispose();
+      this.planButton = null;
+    }
 
     for (const formationButton of this.formationButtons) {
       formationButton.button.dispose();

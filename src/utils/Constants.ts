@@ -24,6 +24,16 @@ export const GAME_CONSTANTS = {
   CAMERA_UPPER_RADIUS_LIMIT: 20,
   CAMERA_LOWER_HEIGHT_LIMIT: 2,
   CAMERA_UPPER_HEIGHT_LIMIT: 10,
+  CAMERA_PLANNING_RADIUS: 20,
+  CAMERA_PLANNING_HEIGHT_OFFSET: 55,
+  CAMERA_PLANNING_ARC_RADIUS: 70,
+  CAMERA_PLANNING_ARC_ALPHA: 0,
+  CAMERA_PLANNING_ARC_BETA: 0.15,
+  CAMERA_PLANNING_ARC_MIN_RADIUS: 30,
+  CAMERA_PLANNING_ARC_MAX_RADIUS: 120,
+  CAMERA_PLANNING_ARC_MIN_BETA: 0.2,
+  CAMERA_PLANNING_ARC_MAX_BETA: 0.9,
+  CAMERA_PLANNING_PAN_SENSIBILITY: 800,
 
   COVER_DETECTION_RADIUS: 3,
 
@@ -56,14 +66,33 @@ export const GAME_CONSTANTS = {
   MEMBER_CARD_HEIGHT_MOBILE: 75
 } as const;
 
+export const CHARACTER_ASSET_PATHS = {
+  shock_troops: {
+    CHARACTER_IDLE: 'models/shock_troops/shock_troops_Idle.glb',
+    CHARACTER_WALK: 'models/shock_troops/shock_troops_Walk.glb',
+    CHARACTER_RUN: 'models/shock_troops/shock_troops_Run.glb',
+    CHARACTER_SHOOT: 'models/shock_troops/shock_troops_Shoot.glb',
+    CHARACTER_COVER: 'models/shock_troops/shock_troops_Cover.glb',
+    CHARACTER_MELEE: 'models/shock_troops/shock_troops_Melee.glb',
+    CHARACTER_DEATH: 'models/shock_troops/shock_troops_Death.glb'
+  },
+  teutoni_sapper: {
+    CHARACTER_IDLE: 'models/teutoni_sapper/sapper_Idle.glb',
+    CHARACTER_WALK: 'models/teutoni_sapper/sapper_Walk.glb',
+    CHARACTER_RUN: 'models/teutoni_sapper/sapper_Run.glb',
+    CHARACTER_SHOOT: 'models/teutoni_sapper/sapper_Shoot.glb',
+    CHARACTER_COVER: 'models/teutoni_sapper/sapper_Cover.glb',
+    CHARACTER_MELEE: 'models/teutoni_sapper/sapper_Melee.glb',
+    CHARACTER_DEATH: 'models/teutoni_sapper/sapper_Death.glb'
+  }
+} as const;
+
+export type CharacterType = keyof typeof CHARACTER_ASSET_PATHS;
+
+export const ACTIVE_CHARACTER_TYPE: CharacterType = 'teutoni_sapper';
+
 export const ASSET_PATHS = {
-  CHARACTER_IDLE: 'models/shock_troops_Idle.glb',
-  CHARACTER_WALK: 'models/shock_troops_Walk.glb',
-  CHARACTER_RUN: 'models/shock_troops_Run.glb',
-  CHARACTER_SHOOT: 'models/shock_troops_Shoot.glb',
-  CHARACTER_COVER: 'models/shock_troops_Cover.glb',
-  CHARACTER_MELEE: 'models/shock_troops_Melee.glb',
-  CHARACTER_DEATH: 'models/shock_troops_Death.glb',
+  ...CHARACTER_ASSET_PATHS[ACTIVE_CHARACTER_TYPE],
   CARGO_CONTAINER: 'models/Cargo_Container.glb'
 } as const;
 

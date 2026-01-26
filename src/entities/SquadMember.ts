@@ -39,10 +39,15 @@ export class SquadMember extends Unit {
   // Order system
   private currentOrder: SquadOrder | null = null;
   private orderState: OrderExecutionState = OrderExecutionState.IDLE;
+  private completedOrder: SquadOrder | null = null;
 
   // Navigation for AI movement
   private navigationSystem: NavigationSystem | null = null;
   private agentIndex: number = -1;
+  private lastNavTarget: Vector3 | null = null;
+  private navStallTimer: number = 0;
+  private lastNavSpeed: number | null = null;
+  private navMovementRequested: boolean = false;
 
   // Selection indicator
   private selectionRing: Mesh | null = null;
@@ -99,6 +104,7 @@ export class SquadMember extends Unit {
       maxSpeed: this.stats.moveSpeed,
       maxAcceleration: 4.0
     });
+    this.lastNavSpeed = this.stats.moveSpeed;
   }
 
   /**
@@ -241,6 +247,8 @@ export class SquadMember extends Unit {
   public update(deltaTime: number): void {
     if (!this.stats.isAlive) return;
 
+    this.navMovementRequested = false;
+
     if (this.isPlayerControlled) {
       // Player-controlled: apply rotation and movement from input
       this.applyRotation(deltaTime);
@@ -248,9 +256,19 @@ export class SquadMember extends Unit {
       if (!this.isPerformingAction && !this.stats.isInCover) {
         this.applyMovement(deltaTime);
       }
+
+      if (this.canUseNavAgent()) {
+        // Keep nav agent in sync so the crowd doesn't override player movement.
+        this.navigationSystem!.agentTeleport(this.agentIndex, this.rootNode.position);
+      }
     } else {
       // AI-controlled: execute orders or follow leader
       this.updateAI(deltaTime);
+    }
+
+    if (!this.isPlayerControlled && this.canUseNavAgent()) {
+      this.updateNavRotation(deltaTime);
+      this.syncCollisionMesh();
     }
 
     this.animationController.update(deltaTime);
@@ -318,6 +336,7 @@ export class SquadMember extends Unit {
 
   private executeHold(): void {
     this.targetVelocity.setAll(0);
+    this.stopNavMovement();
     this.animationController.transition(AnimationState.IDLE);
     this.orderState = OrderExecutionState.EXECUTING;
   }
@@ -325,35 +344,43 @@ export class SquadMember extends Unit {
   private executeAdvance(deltaTime: number): void {
     if (!this.currentOrder?.target) return;
 
-    const targetPos = this.currentOrder.target;
+    const targetPos = this.resolveNavTarget(this.currentOrder.target);
     const currentPos = this.getPosition();
     const distance = Vector3.Distance(currentPos, targetPos);
 
     if (distance < 1.0) {
+      const finishedOrder = this.currentOrder;
       this.orderState = OrderExecutionState.COMPLETED;
       this.currentOrder = null;
+      this.completedOrder = finishedOrder;
+      this.stopNavMovement();
+      this.resetNavState();
       this.animationController.transition(AnimationState.IDLE);
       return;
     }
 
-    this.moveToward(targetPos, deltaTime);
+    this.moveWithNavigation(targetPos, deltaTime);
   }
 
   private executeFallback(deltaTime: number): void {
     if (!this.currentOrder?.target) return;
 
-    const targetPos = this.currentOrder.target;
+    const targetPos = this.resolveNavTarget(this.currentOrder.target);
     const currentPos = this.getPosition();
     const distance = Vector3.Distance(currentPos, targetPos);
 
     if (distance < 1.0) {
+      const finishedOrder = this.currentOrder;
       this.orderState = OrderExecutionState.COMPLETED;
       this.currentOrder = null;
+      this.completedOrder = finishedOrder;
+      this.stopNavMovement();
+      this.resetNavState();
       this.animationController.transition(AnimationState.IDLE);
       return;
     }
 
-    this.moveToward(targetPos, deltaTime);
+    this.moveWithNavigation(targetPos, deltaTime);
   }
 
   private executeTakeCover(): void {
@@ -369,16 +396,18 @@ export class SquadMember extends Unit {
     // Move toward target and engage
     if (this.currentOrder?.target) {
       const targetPos = this.currentOrder.target;
+      const navTarget = this.resolveNavTarget(targetPos);
       const currentPos = this.getPosition();
-      const distance = Vector3.Distance(currentPos, targetPos);
+      const distance = Vector3.Distance(currentPos, navTarget);
 
       if (distance < 10.0) {
         // In range - attack
         this.targetVelocity.setAll(0);
+        this.stopNavMovement();
         this.rotateToward(targetPos, deltaTime);
         // Periodic shooting would be handled here
       } else {
-        this.moveToward(targetPos, deltaTime);
+        this.moveWithNavigation(navTarget, deltaTime);
       }
     }
   }
@@ -404,16 +433,19 @@ export class SquadMember extends Unit {
       leaderPos.z + offsetZ
     );
 
+    const navTarget = this.resolveNavTarget(targetPos);
     const currentPos = this.getPosition();
-    const distance = Vector3.Distance(currentPos, targetPos);
+    const distance = Vector3.Distance(currentPos, navTarget);
     const stopDistance = 0.2;
     const slowRadius = 4.0;
 
     if (distance > stopDistance) {
       const speedMultiplier = Math.min(1, Math.max(0.4, distance / slowRadius));
-      this.moveToward(targetPos, deltaTime, speedMultiplier);
+      this.moveWithNavigation(navTarget, deltaTime, speedMultiplier);
     } else {
       this.targetVelocity.setAll(0);
+      this.stopNavMovement();
+      this.resetNavState();
       this.alignToRotation(leaderRotation, deltaTime);
       this.animationController.transition(AnimationState.IDLE);
     }
@@ -449,6 +481,102 @@ export class SquadMember extends Unit {
 
     this.applyMovement(deltaTime);
     this.animationController.transition(speedMultiplier > 0.7 ? AnimationState.WALK : AnimationState.WALK);
+  }
+
+  private canUseNavAgent(): boolean {
+    return !!this.navigationSystem &&
+      this.config.useNavAgent === true &&
+      this.agentIndex >= 0 &&
+      this.navigationSystem.isReady();
+  }
+
+  private resolveNavTarget(target: Vector3): Vector3 {
+    if (this.navigationSystem && this.config.useNavAgent) {
+      return this.navigationSystem.getClosestPoint(target);
+    }
+    return target;
+  }
+
+  private resetNavState(): void {
+    this.lastNavTarget = null;
+    this.navStallTimer = 0;
+    this.navMovementRequested = false;
+  }
+
+  private updateNavSpeed(speedMultiplier: number): void {
+    if (!this.canUseNavAgent()) return;
+
+    const desiredSpeed = this.stats.moveSpeed * speedMultiplier;
+    if (this.lastNavSpeed === null || Math.abs(desiredSpeed - this.lastNavSpeed) > 0.05) {
+      this.navigationSystem.updateAgentParameters(this.agentIndex, { maxSpeed: desiredSpeed });
+      this.lastNavSpeed = desiredSpeed;
+    }
+  }
+
+  private stopNavMovement(): void {
+    if (!this.canUseNavAgent()) return;
+    const currentPos = this.getPosition();
+    this.navigationSystem.agentTeleport(this.agentIndex, currentPos);
+  }
+
+  private syncCollisionMesh(): void {
+    if (!this.collisionMesh) return;
+    this.collisionMesh.position.x = this.rootNode.position.x;
+    this.collisionMesh.position.z = this.rootNode.position.z;
+    this.collisionMesh.position.y = this.rootNode.position.y + 1.0;
+  }
+
+  private updateNavRotation(deltaTime: number): void {
+    if (!this.canUseNavAgent()) return;
+
+    const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+    if (velocity.length() > 0.05) {
+      const targetRotation = Math.atan2(velocity.x, velocity.z);
+      this.alignToRotation(targetRotation, deltaTime);
+      if (this.navMovementRequested && !this.animationController.isInState(AnimationState.WALK)) {
+        this.animationController.transition(AnimationState.WALK);
+      }
+    } else if (!this.navMovementRequested && !this.isPerformingAction && !this.stats.isInCover) {
+      if (!this.animationController.isInState(AnimationState.IDLE)) {
+        this.animationController.transition(AnimationState.IDLE);
+      }
+    }
+  }
+
+  private moveWithNavigation(target: Vector3, deltaTime: number, speedMultiplier: number = 1.0): void {
+    if (!this.canUseNavAgent()) {
+      this.moveToward(target, deltaTime, speedMultiplier);
+      return;
+    }
+
+    this.navMovementRequested = true;
+    this.updateNavSpeed(speedMultiplier);
+
+    const navTarget = this.resolveNavTarget(target);
+    const targetChanged = !this.lastNavTarget ||
+      Vector3.DistanceSquared(this.lastNavTarget, navTarget) > 0.25;
+
+    if (targetChanged) {
+      this.navigationSystem.agentGoto(this.agentIndex, navTarget);
+      this.lastNavTarget = navTarget.clone();
+      this.navStallTimer = 0;
+    } else {
+      const distance = Vector3.Distance(this.getPosition(), navTarget);
+      const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+      if (distance > 1.0 && velocity.length() < 0.05) {
+        this.navStallTimer += deltaTime;
+        if (this.navStallTimer > 0.5) {
+          this.navigationSystem.agentGoto(this.agentIndex, navTarget);
+          this.navStallTimer = 0;
+        }
+      } else {
+        this.navStallTimer = 0;
+      }
+    }
+
+    if (!this.animationController.isInState(AnimationState.WALK)) {
+      this.animationController.transition(AnimationState.WALK);
+    }
   }
 
   /**
@@ -512,6 +640,8 @@ export class SquadMember extends Unit {
       // Taking control - cancel any AI orders
       this.currentOrder = null;
       this.orderState = OrderExecutionState.IDLE;
+      this.stopNavMovement();
+      this.resetNavState();
     }
   }
 
@@ -532,6 +662,8 @@ export class SquadMember extends Unit {
   public issueOrder(order: SquadOrder): void {
     this.currentOrder = order;
     this.orderState = OrderExecutionState.PENDING;
+    this.completedOrder = null;
+    this.resetNavState();
 
     // Exit cover if moving
     if (order.type !== SquadOrderType.HOLD && order.type !== SquadOrderType.TAKE_COVER) {
@@ -539,12 +671,16 @@ export class SquadMember extends Unit {
         this.stats.isInCover = false;
         this.animationController.transition(AnimationState.IDLE);
       }
+    } else {
+      this.stopNavMovement();
     }
   }
 
   public cancelOrder(): void {
     this.currentOrder = null;
     this.orderState = OrderExecutionState.IDLE;
+    this.stopNavMovement();
+    this.resetNavState();
   }
 
   public getCurrentOrder(): SquadOrder | null {
@@ -553,6 +689,12 @@ export class SquadMember extends Unit {
 
   public getOrderState(): OrderExecutionState {
     return this.orderState;
+  }
+
+  public consumeCompletedOrder(): SquadOrder | null {
+    const finishedOrder = this.completedOrder;
+    this.completedOrder = null;
+    return finishedOrder;
   }
 
   // === Follow System ===
@@ -587,6 +729,14 @@ export class SquadMember extends Unit {
 
   public getRootMesh(): AbstractMesh | null {
     return this.animationController.getRootMesh();
+  }
+
+  public setPosition(position: Vector3): void {
+    super.setPosition(position);
+
+    if (this.navigationSystem && this.config.useNavAgent && this.agentIndex >= 0) {
+      this.navigationSystem.agentTeleport(this.agentIndex, position);
+    }
   }
 
   public dispose(): void {

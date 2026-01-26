@@ -1,16 +1,21 @@
 import {
   Scene,
   Vector3,
+  Vector2,
   Color3,
   Color4,
   HemisphericLight,
   DirectionalLight,
+  ArcRotateCamera,
   MeshBuilder,
   StandardMaterial,
   ShadowGenerator,
   Texture,
   AbstractMesh,
-  Mesh
+  Mesh,
+  PointerEventTypes,
+  KeyboardEventTypes,
+  Matrix
 } from '@babylonjs/core';
 import { EngineWrapper } from './core/Engine';
 import { AssetLoader, LoadProgress } from './core/AssetLoader';
@@ -55,6 +60,23 @@ export class Game {
   private lastTime: number = 0;
 
   private progressCallbacks: ((progress: LoadProgress) => void)[] = [];
+
+  private isPlanningModeActive: boolean = false;
+  private isPlanningToggleActive: boolean = false;
+  private planningCamera: ArcRotateCamera | null = null;
+  private isOrderDragActive: boolean = false;
+  private orderDragPointerId: number | null = null;
+  private orderDragTarget: Vector3 | null = null;
+  private orderDragMemberId: string | null = null;
+  private planningIndicatorMemberId: string | null = null;
+  private planningMarker: Mesh | null = null;
+  private planningLine: Mesh | null = null;
+  private hasPlanningTarget: boolean = false;
+  private planningFitRadius: number | null = null;
+  private planningFitTarget: Vector3 | null = null;
+  private planningPanEnabled: boolean = false;
+  private planningMapMin: Vector3 | null = null;
+  private planningMapMax: Vector3 | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.engineWrapper = new EngineWrapper(canvas, {
@@ -132,8 +154,11 @@ export class Game {
   private createGround(): void {
     const groundMaterial = new StandardMaterial('groundMaterial', this.scene);
 
-    // Load moon texture
-    const diffuseTexture = new Texture('textures/moon/diffuse.jpg', this.scene);
+    // Load concrete floor texture
+    const diffuseTexture = new Texture(
+      'textures/concrete_floor_worn_001_4k/concrete_floor_worn_001_diff_4k.jpg',
+      this.scene
+    );
     diffuseTexture.uScale = 10;
     diffuseTexture.vScale = 10;
     groundMaterial.diffuseTexture = diffuseTexture;
@@ -148,6 +173,7 @@ export class Game {
       },
       this.scene
     );
+    ground.metadata = { type: 'ground' };
     ground.material = groundMaterial;
     ground.receiveShadows = true;
     ground.checkCollisions = true;
@@ -751,11 +777,21 @@ export class Game {
       },
       onMemberDied: (member: SquadMember) => {
         console.log(`${member.getDisplayName()} has been killed!`);
+      },
+      onOrderCompleted: (member: SquadMember) => {
+        if (this.planningIndicatorMemberId === member.getConfig().id) {
+          this.clearPlanningIndicators();
+        }
       }
     });
 
     // Create squad panel UI
-    this.squadPanel = new SquadPanel(this.scene, this.squadManager);
+    this.squadPanel = new SquadPanel(this.scene, this.squadManager, {
+      onPlanningModeChanged: () => {
+        this.isPlanningToggleActive = !this.isPlanningToggleActive;
+        this.updatePlanningMode();
+      }
+    });
   }
 
   private setupCamera(): void {
@@ -779,6 +815,167 @@ export class Game {
         this.cameraSystem.setTarget(playerRoot);
       }
     }
+
+    this.setupPlanningCamera();
+  }
+
+  private setupPlanningCamera(): void {
+    const planningCamera = new ArcRotateCamera(
+      'planningCamera',
+      GAME_CONSTANTS.CAMERA_PLANNING_ARC_ALPHA,
+      GAME_CONSTANTS.CAMERA_PLANNING_ARC_BETA,
+      GAME_CONSTANTS.CAMERA_PLANNING_ARC_RADIUS,
+      Vector3.Zero(),
+      this.scene
+    );
+
+    planningCamera.inputs.clear();
+    planningCamera.inputs.addPointers();
+    planningCamera.inputs.addMouseWheel();
+    const pointerInput = planningCamera.inputs.attached.pointers;
+    if (pointerInput) {
+      // Allow touch gestures while keeping right-drag for panning; left stays for orders.
+      pointerInput.buttons = [0, 2];
+      pointerInput.multiTouchPanning = true;
+      pointerInput.multiTouchPanAndZoom = true;
+      pointerInput.pinchZoom = true;
+    }
+    planningCamera.lowerAlphaLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_ALPHA;
+    planningCamera.upperAlphaLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_ALPHA;
+    planningCamera.lowerBetaLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_BETA;
+    planningCamera.upperBetaLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_BETA;
+    planningCamera.lowerRadiusLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_MIN_RADIUS;
+    planningCamera.upperRadiusLimit = GAME_CONSTANTS.CAMERA_PLANNING_ARC_MAX_RADIUS;
+    planningCamera.panningSensibility = GAME_CONSTANTS.CAMERA_PLANNING_PAN_SENSIBILITY;
+    planningCamera.inertia = 0;
+
+    this.planningCamera = planningCamera;
+    this.computePlanningFit();
+  }
+
+  private computePlanningFit(): void {
+    if (!this.planningCamera) return;
+
+    const bounds = this.computePlanningBounds();
+    if (!bounds) {
+      this.planningFitRadius = GAME_CONSTANTS.CAMERA_PLANNING_ARC_RADIUS;
+      this.planningFitTarget = Vector3.Zero();
+      return;
+    }
+
+    this.planningMapMin = bounds.min;
+    this.planningMapMax = bounds.max;
+
+    const center = bounds.min.add(bounds.max).scale(0.5);
+    const target = new Vector3(center.x, 0, center.z);
+    this.planningFitTarget = target;
+
+    const minRadius = GAME_CONSTANTS.CAMERA_PLANNING_ARC_MIN_RADIUS;
+    const extents = bounds.max.subtract(bounds.min);
+    const mapDiagonal = Math.sqrt(extents.x * extents.x + extents.z * extents.z);
+    const maxRadius = Math.max(GAME_CONSTANTS.CAMERA_PLANNING_ARC_MAX_RADIUS, mapDiagonal * 4);
+    let low = minRadius;
+    let high = maxRadius;
+    let best = minRadius;
+
+    for (let i = 0; i < 24; i++) {
+      const mid = (low + high) / 2;
+      if (this.arePlanningCornersInsideMap(mid, target)) {
+        best = mid;
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+
+    this.planningFitRadius = best;
+  }
+
+  private computePlanningBounds(): { min: Vector3; max: Vector3 } | null {
+    let min = new Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+    let max = new Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+    let hasBounds = false;
+
+    for (const mesh of this.navMeshSources) {
+      if (!mesh) continue;
+      const bounds = mesh.getBoundingInfo().boundingBox;
+      min = Vector3.Minimize(min, bounds.minimumWorld);
+      max = Vector3.Maximize(max, bounds.maximumWorld);
+      hasBounds = true;
+    }
+
+    if (!hasBounds) return null;
+    return { min, max };
+  }
+
+  private getPlanningCornerOffsets(radius: number, target: Vector3): { minX: number; maxX: number; minZ: number; maxZ: number } | null {
+    if (!this.planningCamera) return null;
+
+    const camera = this.planningCamera;
+    const canvas = this.engineWrapper.getCanvas();
+    const width = canvas.clientWidth || 1;
+    const height = canvas.clientHeight || 1;
+    const previousRadius = camera.radius;
+    const previousTarget = camera.getTarget().clone();
+
+    camera.radius = radius;
+    camera.setTarget(target);
+    camera.computeWorldMatrix(true);
+
+    const corners = [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: 0, y: height },
+      { x: width, y: height }
+    ];
+
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+
+    for (const corner of corners) {
+      const ray = this.scene.createPickingRay(corner.x, corner.y, Matrix.Identity(), camera);
+      if (Math.abs(ray.direction.y) < 1e-5) {
+        continue;
+      }
+      const distance = (0 - ray.origin.y) / ray.direction.y;
+      if (distance <= 0) {
+        continue;
+      }
+
+      const hitPoint = ray.origin.add(ray.direction.scale(distance));
+      const offset = hitPoint.subtract(target);
+      minX = Math.min(minX, offset.x);
+      maxX = Math.max(maxX, offset.x);
+      minZ = Math.min(minZ, offset.z);
+      maxZ = Math.max(maxZ, offset.z);
+    }
+
+    camera.radius = previousRadius;
+    camera.setTarget(previousTarget);
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minZ) || !Number.isFinite(maxZ)) {
+      return null;
+    }
+
+    return { minX, maxX, minZ, maxZ };
+  }
+
+  private arePlanningCornersInsideMap(radius: number, target: Vector3): boolean {
+    if (!this.planningMapMin || !this.planningMapMax) return false;
+    const offsets = this.getPlanningCornerOffsets(radius, target);
+    if (!offsets) return false;
+
+    const minX = target.x + offsets.minX;
+    const maxX = target.x + offsets.maxX;
+    const minZ = target.z + offsets.minZ;
+    const maxZ = target.z + offsets.maxZ;
+
+    return minX >= this.planningMapMin.x &&
+      maxX <= this.planningMapMax.x &&
+      minZ >= this.planningMapMin.z &&
+      maxZ <= this.planningMapMax.z;
   }
 
   private setupInput(): void {
@@ -790,6 +987,9 @@ export class Game {
 
     // Setup click-to-target picking
     this.scene.onPointerDown = (_evt, pickResult) => {
+      if (this.isPlanningModeActive) {
+        return;
+      }
       if (pickResult.hit && pickResult.pickedMesh) {
         const metadata = pickResult.pickedMesh.metadata;
         if (metadata && metadata.type === 'enemy') {
@@ -798,10 +998,71 @@ export class Game {
       }
     };
 
+    this.scene.onPointerObservable.add((pointerInfo) => {
+      if (!this.isPlanningModeActive || !this.squadManager) return;
+
+      const pickInfo = pointerInfo.pickInfo;
+      const event = pointerInfo.event as PointerEvent | undefined;
+
+      if (pointerInfo.type === PointerEventTypes.POINTERDOWN) {
+        if (this.isOrderDragActive) return;
+        if (event && event.button !== 0) return;
+
+        const selectedMemberId = this.squadManager.getCommandSelectedMemberId();
+        if (!selectedMemberId) return;
+
+        if (!pickInfo?.hit || !pickInfo.pickedPoint || !pickInfo.pickedMesh?.metadata?.type) return;
+        if (pickInfo.pickedMesh.metadata.type !== 'ground') return;
+
+        this.isOrderDragActive = true;
+        this.orderDragPointerId = event.pointerId ?? null;
+        this.orderDragTarget = pickInfo.pickedPoint.clone();
+        this.orderDragMemberId = selectedMemberId;
+        this.updatePlanningIndicators(this.orderDragTarget, this.squadManager.getMember(selectedMemberId) || null);
+      }
+
+      if (pointerInfo.type === PointerEventTypes.POINTERMOVE) {
+        if (!this.isOrderDragActive) return;
+        if (this.orderDragPointerId !== null && event && event.pointerId !== this.orderDragPointerId) return;
+
+        if (pickInfo?.hit && pickInfo.pickedPoint) {
+          this.orderDragTarget = pickInfo.pickedPoint.clone();
+          this.updatePlanningIndicators(this.orderDragTarget, this.squadManager.getMember(this.orderDragMemberId || '') || null);
+        }
+      }
+
+      if (pointerInfo.type === PointerEventTypes.POINTERUP) {
+        if (!this.isOrderDragActive) return;
+        if (this.orderDragPointerId !== null && event && event.pointerId !== this.orderDragPointerId) return;
+
+        if (this.orderDragMemberId && this.orderDragTarget) {
+          this.squadManager.issueOrderToMember(
+            this.orderDragMemberId,
+            SquadOrderType.ADVANCE,
+            this.orderDragTarget
+          );
+          this.planningIndicatorMemberId = this.orderDragMemberId;
+        }
+
+        this.isOrderDragActive = false;
+        this.orderDragPointerId = null;
+        this.orderDragTarget = null;
+        this.orderDragMemberId = null;
+        this.hasPlanningTarget = true;
+      }
+    });
+
     // Setup keyboard shortcuts for squad selection
     this.scene.onKeyboardObservable.add((kbInfo) => {
-      if (kbInfo.type === 1) { // Key down
+      if (kbInfo.type === KeyboardEventTypes.KEYDOWN) { // Key down
         const key = kbInfo.event.key;
+
+        if (key === 'Alt') {
+          if (!kbInfo.event.repeat) {
+            this.isPlanningToggleActive = !this.isPlanningToggleActive;
+            this.updatePlanningMode();
+          }
+        }
 
         // Number keys 1-5 to select squad members
         if (key >= '1' && key <= '5' && this.squadManager) {
@@ -832,7 +1093,154 @@ export class Game {
           }
         }
       }
+
+      if (kbInfo.type === KeyboardEventTypes.KEYUP) {
+        // No-op for toggle mode
+      }
     });
+  }
+
+  private updatePlanningMode(): void {
+    const shouldBeActive = this.isPlanningToggleActive;
+    if (shouldBeActive === this.isPlanningModeActive) return;
+
+    this.isPlanningModeActive = shouldBeActive;
+
+    if (this.isPlanningModeActive) {
+      this.enterPlanningMode();
+    } else {
+      this.exitPlanningMode();
+    }
+
+    if (this.squadPanel) {
+      this.squadPanel.setPlanningMode(this.isPlanningModeActive);
+    }
+  }
+
+  private enterPlanningMode(): void {
+    if (this.planningCamera) {
+      this.computePlanningFit();
+      const target = this.planningFitTarget ?? Vector3.Zero();
+      this.planningCamera.setTarget(target);
+      if (this.planningFitRadius !== null) {
+        const maxRadius = this.planningFitRadius;
+        this.planningCamera.upperRadiusLimit = maxRadius;
+        this.planningCamera.radius = Math.max(
+          GAME_CONSTANTS.CAMERA_PLANNING_ARC_MIN_RADIUS,
+          Math.min(maxRadius, this.planningFitRadius)
+        );
+      }
+      this.updatePlanningPanState();
+      this.planningCamera.attachControl(this.engineWrapper.getCanvas(), false, false, 2);
+      this.scene.activeCamera = this.planningCamera;
+    }
+
+    if (this.squadManager) {
+      this.squadManager.handleInput(Vector2.Zero(), false, false, false, false);
+    }
+  }
+
+  private exitPlanningMode(): void {
+    if (this.cameraSystem) {
+      if (this.planningCamera) {
+        this.planningCamera.detachControl();
+      }
+      this.scene.activeCamera = this.cameraSystem.getCamera();
+    }
+
+    this.isOrderDragActive = false;
+    this.orderDragPointerId = null;
+    this.orderDragTarget = null;
+    this.orderDragMemberId = null;
+    this.clearPlanningIndicators();
+  }
+
+  private updatePlanningPanState(): void {
+    if (!this.planningCamera || this.planningFitRadius === null) return;
+
+    const shouldEnable = true;
+    if (shouldEnable === this.planningPanEnabled) return;
+
+    this.planningPanEnabled = shouldEnable;
+    this.planningCamera.panningSensibility = shouldEnable
+      ? GAME_CONSTANTS.CAMERA_PLANNING_PAN_SENSIBILITY
+      : Number.POSITIVE_INFINITY;
+  }
+
+  private clampPlanningTarget(): void {
+    if (!this.planningCamera || !this.planningMapMin || !this.planningMapMax) return;
+
+    const target = this.planningCamera.getTarget();
+    const offsets = this.getPlanningCornerOffsets(this.planningCamera.radius, target);
+    if (!offsets) return;
+
+    const minX = this.planningMapMin.x - offsets.minX;
+    const maxX = this.planningMapMax.x - offsets.maxX;
+    const minZ = this.planningMapMin.z - offsets.minZ;
+    const maxZ = this.planningMapMax.z - offsets.maxZ;
+
+    const clampedX = Math.min(maxX, Math.max(minX, target.x));
+    const clampedZ = Math.min(maxZ, Math.max(minZ, target.z));
+
+    if (clampedX !== target.x || clampedZ !== target.z) {
+      this.planningCamera.setTarget(new Vector3(clampedX, target.y, clampedZ));
+    }
+  }
+
+  private ensurePlanningIndicators(): void {
+    if (!this.planningMarker) {
+      const marker = MeshBuilder.CreateTorus(
+        'planningMarker',
+        { diameter: 1.5, thickness: 0.08, tessellation: 32 },
+        this.scene
+      );
+      marker.rotation.x = Math.PI / 2;
+      marker.isPickable = false;
+      marker.isVisible = false;
+      const markerMaterial = new StandardMaterial('planningMarkerMaterial', this.scene);
+      markerMaterial.emissiveColor = new Color3(1, 0.9, 0.2);
+      markerMaterial.disableLighting = true;
+      markerMaterial.alpha = 0.9;
+      marker.material = markerMaterial;
+      this.planningMarker = marker;
+    }
+  }
+
+  private updatePlanningIndicators(target: Vector3, member: SquadMember | null): void {
+    this.ensurePlanningIndicators();
+    if (this.planningMarker) {
+      this.planningMarker.position.set(target.x, target.y + 0.15, target.z);
+      this.planningMarker.isVisible = true;
+    }
+
+    if (this.planningLine) {
+      this.planningLine.dispose();
+      this.planningLine = null;
+    }
+
+    if (member) {
+      const start = member.getPosition().clone();
+      start.y += 0.15;
+      const end = target.clone();
+      end.y += 0.15;
+      const points = [start.clone(), end];
+      const line = MeshBuilder.CreateLines('planningLine', { points }, this.scene);
+      line.isPickable = false;
+      line.color = new Color3(1, 0.9, 0.2);
+      this.planningLine = line;
+    }
+  }
+
+  private clearPlanningIndicators(): void {
+    if (this.planningMarker) {
+      this.planningMarker.isVisible = false;
+    }
+    if (this.planningLine) {
+      this.planningLine.dispose();
+      this.planningLine = null;
+    }
+    this.planningIndicatorMemberId = null;
+    this.hasPlanningTarget = false;
   }
 
   private selectTarget(mesh: AbstractMesh): void {
@@ -944,38 +1352,49 @@ export class Game {
 
       // Route input to squad manager (active member)
       if (this.squadManager) {
-        this.squadManager.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
+        if (this.isPlanningModeActive) {
+          this.squadManager.handleInput(Vector2.Zero(), false, false, false, false);
+        } else {
+          this.squadManager.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
 
-        // Damage selected target when shooting - only if aiming at it
-        const activeMember = this.squadManager.getActiveMember();
-        if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive() && activeMember) {
-          if (this.isAimingAtTargetFromMember(activeMember, this.selectedEnemy)) {
-            this.damageSelectedTarget(25);
-          } else {
-            console.log('Missed! Not aiming at target.');
+          // Damage selected target when shooting - only if aiming at it
+          const activeMember = this.squadManager.getActiveMember();
+          if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive() && activeMember) {
+            if (this.isAimingAtTargetFromMember(activeMember, this.selectedEnemy)) {
+              this.damageSelectedTarget(25);
+            } else {
+              console.log('Missed! Not aiming at target.');
+            }
           }
         }
       } else if (this.player) {
         // Fallback to legacy player if no squad
-        this.player.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
-        this.player.update(deltaTime);
+        if (this.isPlanningModeActive) {
+          this.player.handleInput(Vector2.Zero(), false, false, false, false);
+        } else {
+          this.player.handleInput(movement, isSprinting, isShooting, isMelee, isCover);
 
-        if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive()) {
-          if (this.isAimingAtTarget(this.selectedEnemy)) {
-            this.damageSelectedTarget(25);
-          } else {
-            console.log('Missed! Not aiming at target.');
+          if (isShooting && this.selectedEnemy && this.selectedEnemy.isEnemyAlive()) {
+            if (this.isAimingAtTarget(this.selectedEnemy)) {
+              this.damageSelectedTarget(25);
+            } else {
+              console.log('Missed! Not aiming at target.');
+            }
           }
         }
+
+        this.player.update(deltaTime);
       }
 
       // Handle camera zoom
       const zoomDelta = this.inputManager.consumeZoomDelta();
-      if (zoomDelta !== 0 && this.cameraSystem) {
-        if (zoomDelta > 0) {
-          this.cameraSystem.zoomOut(zoomDelta);
-        } else {
-          this.cameraSystem.zoomIn(-zoomDelta);
+      if (zoomDelta !== 0) {
+        if (!this.isPlanningModeActive && this.cameraSystem) {
+          if (zoomDelta > 0) {
+            this.cameraSystem.zoomOut(zoomDelta);
+          } else {
+            this.cameraSystem.zoomIn(-zoomDelta);
+          }
         }
       }
 
@@ -984,6 +1403,10 @@ export class Game {
 
     if (this.cameraSystem) {
       this.cameraSystem.update(deltaTime);
+    }
+
+    if (this.isPlanningModeActive && this.planningCamera) {
+      this.clampPlanningTarget();
     }
 
     // Update squad

@@ -79,35 +79,40 @@ export const DEFAULT_SQUAD_CONFIG: SquadMemberConfig[] = [
     displayName: 'Sgt. Kane',
     role: 'rifleman',
     equipment: { primary: 'rifle', secondary: 'pistol', grenades: 2 },
-    spawnOffset: new Vector3(0, 0, 0)
+    spawnOffset: new Vector3(0, 0, 0),
+    useNavAgent: true
   },
   {
     id: 'bravo',
     displayName: 'Cpl. Chen',
     role: 'rifleman',
     equipment: { primary: 'rifle', secondary: 'pistol', grenades: 2 },
-    spawnOffset: new Vector3(-2, 0, -2)
+    spawnOffset: new Vector3(-2, 0, -2),
+    useNavAgent: true
   },
   {
     id: 'charlie',
     displayName: 'Pvt. Torres',
     role: 'grenadier',
     equipment: { primary: 'rifle', secondary: 'grenade_launcher', grenades: 4 },
-    spawnOffset: new Vector3(2, 0, -2)
+    spawnOffset: new Vector3(2, 0, -2),
+    useNavAgent: true
   },
   {
     id: 'delta',
     displayName: 'Pvt. Kim',
     role: 'medic',
     equipment: { primary: 'smg', secondary: 'medkit', grenades: 1 },
-    spawnOffset: new Vector3(-4, 0, -4)
+    spawnOffset: new Vector3(-4, 0, -4),
+    useNavAgent: true
   },
   {
     id: 'echo',
     displayName: 'Pvt. Volkov',
     role: 'heavy',
     equipment: { primary: 'lmg', secondary: 'pistol', grenades: 1 },
-    spawnOffset: new Vector3(4, 0, -4)
+    spawnOffset: new Vector3(4, 0, -4),
+    useNavAgent: true
   }
 ];
 

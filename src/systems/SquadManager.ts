@@ -29,6 +29,8 @@ export class SquadManager {
   private members: Map<string, SquadMember> = new Map();
   private memberOrder: string[] = []; // Track order for cycling
   private activeMemberId: string | null = null;
+  private commandSelectedMemberId: string | null = null;
+  private detachedMembers: Set<string> = new Set();
   private formation: FormationType = 'wedge';
 
   private callbacks: SquadManagerCallbacks = {};
@@ -113,6 +115,10 @@ export class SquadManager {
       member.dispose();
       this.members.delete(memberId);
       this.memberOrder = this.memberOrder.filter(id => id !== memberId);
+      this.detachedMembers.delete(memberId);
+      if (this.commandSelectedMemberId === memberId) {
+        this.commandSelectedMemberId = null;
+      }
 
       // If active member was removed, select another
       if (this.activeMemberId === memberId && this.memberOrder.length > 0) {
@@ -133,13 +139,11 @@ export class SquadManager {
       const prevMember = this.members.get(this.activeMemberId);
       if (prevMember) {
         prevMember.setPlayerControlled(false);
-        prevMember.setSelected(false);
       }
     }
 
     // Activate new member
     newMember.setPlayerControlled(true);
-    newMember.setSelected(true);
     this.activeMemberId = memberId;
 
     // Update follow relationships
@@ -214,6 +218,38 @@ export class SquadManager {
     return this.members.get(this.activeMemberId) || null;
   }
 
+  public getActiveMemberId(): string | null {
+    return this.activeMemberId;
+  }
+
+  public selectCommandMember(memberId: string | null): void {
+    if (this.commandSelectedMemberId) {
+      const prevMember = this.members.get(this.commandSelectedMemberId);
+      if (prevMember) {
+        prevMember.setSelected(false);
+      }
+    }
+
+    this.commandSelectedMemberId = null;
+
+    if (!memberId) return;
+
+    const member = this.members.get(memberId);
+    if (!member || !member.isAlive()) return;
+
+    member.setSelected(true);
+    this.commandSelectedMemberId = memberId;
+  }
+
+  public getCommandSelectedMember(): SquadMember | null {
+    if (!this.commandSelectedMemberId) return null;
+    return this.members.get(this.commandSelectedMemberId) || null;
+  }
+
+  public getCommandSelectedMemberId(): string | null {
+    return this.commandSelectedMemberId;
+  }
+
   /**
    * Get all squad members
    */
@@ -250,6 +286,11 @@ export class SquadManager {
    */
   public issueOrderToAll(orderType: SquadOrderType, target?: Vector3): void {
     const activeMember = this.getActiveMember();
+    if (orderType === SquadOrderType.FOLLOW) {
+      this.detachedMembers.clear();
+      this.updateFollowRelationships();
+    }
+
     if (!target && activeMember && (orderType === SquadOrderType.ADVANCE || orderType === SquadOrderType.FALLBACK)) {
       const distance = orderType === SquadOrderType.ADVANCE ? 6 : -6;
       const formationOffsets = getFormationOffsets(this.formation);
@@ -294,6 +335,14 @@ export class SquadManager {
   public issueOrderToMember(memberId: string, orderType: SquadOrderType, target?: Vector3): void {
     const member = this.members.get(memberId);
     if (!member || !member.isAlive() || memberId === this.activeMemberId) return;
+
+    if (orderType === SquadOrderType.FOLLOW) {
+      this.detachedMembers.delete(memberId);
+      this.updateFollowRelationships();
+    } else {
+      this.detachedMembers.add(memberId);
+      member.setFollowTarget(null);
+    }
 
     const activeMember = this.getActiveMember();
     let resolvedTarget = target;
@@ -343,7 +392,7 @@ export class SquadManager {
     let offsetIndex = 1; // Start at 1, leader is at 0
 
     for (const [id, member] of this.members) {
-      if (id !== this.activeMemberId && member.isAlive()) {
+      if (id !== this.activeMemberId && member.isAlive() && !this.detachedMembers.has(id)) {
         const offset = formationOffsets[offsetIndex] || Vector3.Zero();
         member.setFollowTarget(activeMember, offset);
         offsetIndex++;
@@ -408,6 +457,11 @@ export class SquadManager {
     for (const member of this.members.values()) {
       member.update(deltaTime);
 
+      const completedOrder = member.consumeCompletedOrder();
+      if (completedOrder && this.callbacks.onOrderCompleted) {
+        this.callbacks.onOrderCompleted(member, completedOrder);
+      }
+
       // Check for deaths and notify
       if (!member.isAlive() && this.callbacks.onMemberDied) {
         // Only notify once by checking if we need to select a new member
@@ -447,5 +501,7 @@ export class SquadManager {
     this.members.clear();
     this.memberOrder = [];
     this.activeMemberId = null;
+    this.commandSelectedMemberId = null;
+    this.detachedMembers.clear();
   }
 }
