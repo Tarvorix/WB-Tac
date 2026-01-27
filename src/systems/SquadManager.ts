@@ -17,6 +17,11 @@ export interface SquadManagerCallbacks {
   onOrderCompleted?: (member: SquadMember, order: SquadOrder) => void;
 }
 
+export interface SquadOrderHandler {
+  setOrder: (orderType: SquadOrderType, target?: Vector3, memberId?: string | null) => void;
+  clearOrders: () => void;
+}
+
 /**
  * SquadManager - Central orchestrator for all squad operations.
  * Manages squad member creation, selection, orders, and formations.
@@ -34,6 +39,8 @@ export class SquadManager {
   private formation: FormationType = 'wedge';
 
   private callbacks: SquadManagerCallbacks = {};
+  private orderHandler: SquadOrderHandler | null = null;
+  private lastIssuedOrderType: SquadOrderType = SquadOrderType.SECURE;
 
   constructor(
     scene: Scene,
@@ -222,6 +229,18 @@ export class SquadManager {
     return this.activeMemberId;
   }
 
+  public setOrderHandler(handler: SquadOrderHandler | null): void {
+    this.orderHandler = handler;
+  }
+
+  public getLastOrderType(): SquadOrderType {
+    return this.lastIssuedOrderType;
+  }
+
+  public setLastOrderType(orderType: SquadOrderType): void {
+    this.lastIssuedOrderType = orderType;
+  }
+
   public selectCommandMember(memberId: string | null): void {
     if (this.commandSelectedMemberId) {
       const prevMember = this.members.get(this.commandSelectedMemberId);
@@ -286,46 +305,39 @@ export class SquadManager {
    */
   public issueOrderToAll(orderType: SquadOrderType, target?: Vector3): void {
     const activeMember = this.getActiveMember();
-    if (orderType === SquadOrderType.FOLLOW) {
-      this.detachedMembers.clear();
-      this.updateFollowRelationships();
-    }
+    this.lastIssuedOrderType = orderType;
+    this.detachedMembers.clear();
+    this.updateFollowRelationships();
 
-    if (!target && activeMember && (orderType === SquadOrderType.ADVANCE || orderType === SquadOrderType.FALLBACK)) {
-      const distance = orderType === SquadOrderType.ADVANCE ? 6 : -6;
-      const formationOffsets = getFormationOffsets(this.formation);
-      let offsetIndex = 1;
-
-      for (const [id, member] of this.members) {
-        if (id !== this.activeMemberId && member.isAlive()) {
-          const offset = formationOffsets[offsetIndex] || Vector3.Zero();
-          offsetIndex++;
-
-          const order: SquadOrder = {
-            type: orderType,
-            target: this.computeOrderTarget(activeMember, offset, distance),
-            priority: 1,
-            interruptible: true
-          };
-
-          member.issueOrder(order);
-        }
-      }
-
+    if (this.orderHandler) {
+      this.orderHandler.setOrder(orderType, target, null);
       return;
     }
 
-    const order: SquadOrder = {
-      type: orderType,
-      target,
-      priority: 1,
-      interruptible: true
-    };
+    if (!activeMember) return;
+
+    const formationOffsets = getFormationOffsets(this.formation);
+    let offsetIndex = 1;
+    const distance = orderType === SquadOrderType.FALLBACK ? -6 : 6;
 
     for (const [id, member] of this.members) {
-      if (id !== this.activeMemberId && member.isAlive()) {
-        member.issueOrder(order);
+      if (id === this.activeMemberId || !member.isAlive()) {
+        continue;
       }
+      const offset = formationOffsets[offsetIndex] || Vector3.Zero();
+      offsetIndex++;
+      const orderTarget = target
+        ? this.applyFormationOffset(target, activeMember.getRotation(), offset)
+        : this.computeOrderTarget(activeMember, offset, distance);
+
+      const order: SquadOrder = {
+        type: orderType,
+        target: orderTarget,
+        priority: 1,
+        interruptible: true
+      };
+
+      member.issueOrder(order);
     }
   }
 
@@ -336,18 +348,19 @@ export class SquadManager {
     const member = this.members.get(memberId);
     if (!member || !member.isAlive() || memberId === this.activeMemberId) return;
 
-    if (orderType === SquadOrderType.FOLLOW) {
-      this.detachedMembers.delete(memberId);
-      this.updateFollowRelationships();
-    } else {
-      this.detachedMembers.add(memberId);
-      member.setFollowTarget(null);
+    this.lastIssuedOrderType = orderType;
+    this.detachedMembers.add(memberId);
+    member.setFollowTarget(null);
+
+    if (this.orderHandler) {
+      this.orderHandler.setOrder(orderType, target, memberId);
+      return;
     }
 
     const activeMember = this.getActiveMember();
     let resolvedTarget = target;
-    if (!resolvedTarget && activeMember && (orderType === SquadOrderType.ADVANCE || orderType === SquadOrderType.FALLBACK)) {
-      const distance = orderType === SquadOrderType.ADVANCE ? 6 : -6;
+    if (!resolvedTarget && activeMember) {
+      const distance = orderType === SquadOrderType.FALLBACK ? -6 : 6;
       const offset = this.getFormationOffsetForMember(memberId);
       resolvedTarget = this.computeOrderTarget(activeMember, offset, distance);
     }
@@ -366,6 +379,9 @@ export class SquadManager {
    * Cancel all orders for non-active members
    */
   public cancelAllOrders(): void {
+    if (this.orderHandler) {
+      this.orderHandler.clearOrders();
+    }
     for (const [id, member] of this.members) {
       if (id !== this.activeMemberId) {
         member.cancelOrder();
@@ -431,6 +447,16 @@ export class SquadManager {
       leaderPos.x + forward.x + offsetX,
       leaderPos.y,
       leaderPos.z + forward.z + offsetZ
+    );
+  }
+
+  private applyFormationOffset(base: Vector3, leaderRotation: number, offset: Vector3): Vector3 {
+    const offsetX = offset.x * Math.cos(leaderRotation) - offset.z * Math.sin(leaderRotation);
+    const offsetZ = offset.x * Math.sin(leaderRotation) + offset.z * Math.cos(leaderRotation);
+    return new Vector3(
+      base.x + offsetX,
+      base.y,
+      base.z + offsetZ
     );
   }
 

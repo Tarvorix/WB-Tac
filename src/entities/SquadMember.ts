@@ -35,11 +35,23 @@ export class SquadMember extends Unit {
   // Control state
   private isPlayerControlled: boolean = false;
   private isPerformingAction: boolean = false;
+  private fireCooldown: number = 0;
+  private readonly fireInterval: number = 0.7;
+  private lastHitSource: Vector3 | null = null;
+  private lastHitTimer: number = 0;
+  private readonly hitMemoryDuration: number = 2.5;
 
   // Order system
   private currentOrder: SquadOrder | null = null;
   private orderState: OrderExecutionState = OrderExecutionState.IDLE;
   private completedOrder: SquadOrder | null = null;
+  private reconTimer: number = 0;
+  private readonly reconDuration: number = 3.0;
+  private patrolCenter: Vector3 | null = null;
+  private patrolWaypoints: Vector3[] = [];
+  private patrolWaypointIndex: number = 0;
+  private readonly patrolWaypointThreshold: number = 1.5;
+  private readonly patrolRadius: number = 6;
 
   // Navigation for AI movement
   private navigationSystem: NavigationSystem | null = null;
@@ -232,6 +244,15 @@ export class SquadMember extends Unit {
     });
   }
 
+  public tryShoot(): boolean {
+    if (!this.stats.isAlive) return false;
+    if (this.fireCooldown > 0 || this.isPerformingAction) return false;
+
+    this.fireCooldown = this.fireInterval;
+    this.performShoot();
+    return true;
+  }
+
   private toggleCover(): void {
     if (this.stats.isInCover) {
       this.stats.isInCover = false;
@@ -246,6 +267,16 @@ export class SquadMember extends Unit {
 
   public update(deltaTime: number): void {
     if (!this.stats.isAlive) return;
+
+    if (this.fireCooldown > 0) {
+      this.fireCooldown = Math.max(0, this.fireCooldown - deltaTime);
+    }
+    if (this.lastHitTimer > 0) {
+      this.lastHitTimer = Math.max(0, this.lastHitTimer - deltaTime);
+      if (this.lastHitTimer === 0) {
+        this.lastHitSource = null;
+      }
+    }
 
     this.navMovementRequested = false;
 
@@ -313,57 +344,56 @@ export class SquadMember extends Unit {
     if (!this.currentOrder) return;
 
     switch (this.currentOrder.type) {
-      case SquadOrderType.HOLD:
-        this.executeHold();
-        break;
-      case SquadOrderType.ADVANCE:
-        this.executeAdvance(deltaTime);
+      case SquadOrderType.ENGAGE:
+        this.executeEngage(deltaTime);
         break;
       case SquadOrderType.FALLBACK:
         this.executeFallback(deltaTime);
         break;
-      case SquadOrderType.FOLLOW:
-        this.followLeader(deltaTime);
+      case SquadOrderType.RECON:
+        this.executeRecon(deltaTime);
         break;
-      case SquadOrderType.TAKE_COVER:
-        this.executeTakeCover();
+      case SquadOrderType.SECURE:
+        this.executeSecure(deltaTime);
         break;
-      case SquadOrderType.ATTACK:
-        this.executeAttack(deltaTime);
+      case SquadOrderType.PATROL:
+        this.executePatrol(deltaTime);
         break;
     }
   }
 
-  private executeHold(): void {
-    this.targetVelocity.setAll(0);
-    this.stopNavMovement();
-    this.animationController.transition(AnimationState.IDLE);
+  private executeEngage(deltaTime: number): void {
+    if (!this.currentOrder?.target) {
+      this.orderState = OrderExecutionState.FAILED;
+      return;
+    }
     this.orderState = OrderExecutionState.EXECUTING;
-  }
 
-  private executeAdvance(deltaTime: number): void {
-    if (!this.currentOrder?.target) return;
-
-    const targetPos = this.resolveNavTarget(this.currentOrder.target);
+    const targetPos = this.currentOrder.target;
+    const navTarget = this.resolveNavTarget(targetPos);
     const currentPos = this.getPosition();
-    const distance = Vector3.Distance(currentPos, targetPos);
+    const distance = Vector3.Distance(currentPos, navTarget);
 
-    if (distance < 1.0) {
-      const finishedOrder = this.currentOrder;
-      this.orderState = OrderExecutionState.COMPLETED;
-      this.currentOrder = null;
-      this.completedOrder = finishedOrder;
+    if (distance <= 10.0) {
+      this.targetVelocity.setAll(0);
       this.stopNavMovement();
       this.resetNavState();
-      this.animationController.transition(AnimationState.IDLE);
+      this.rotateToward(targetPos, deltaTime);
+      if (!this.isPerformingAction && !this.animationController.isInState(AnimationState.IDLE)) {
+        this.animationController.transition(AnimationState.IDLE);
+      }
       return;
     }
 
-    this.moveWithNavigation(targetPos, deltaTime);
+    this.moveWithNavigation(navTarget, deltaTime);
   }
 
   private executeFallback(deltaTime: number): void {
-    if (!this.currentOrder?.target) return;
+    if (!this.currentOrder?.target) {
+      this.orderState = OrderExecutionState.FAILED;
+      return;
+    }
+    this.orderState = OrderExecutionState.EXECUTING;
 
     const targetPos = this.resolveNavTarget(this.currentOrder.target);
     const currentPos = this.getPosition();
@@ -383,33 +413,105 @@ export class SquadMember extends Unit {
     this.moveWithNavigation(targetPos, deltaTime);
   }
 
-  private executeTakeCover(): void {
-    // For now, just go into cover stance
-    if (!this.stats.isInCover) {
-      this.stats.isInCover = true;
-      this.animationController.transition(AnimationState.COVER);
+  private executeRecon(deltaTime: number): void {
+    if (!this.currentOrder?.target) {
+      this.orderState = OrderExecutionState.FAILED;
+      return;
     }
-    this.orderState = OrderExecutionState.COMPLETED;
+
+    this.orderState = OrderExecutionState.EXECUTING;
+    const targetPos = this.resolveNavTarget(this.currentOrder.target);
+    const currentPos = this.getPosition();
+    const distance = Vector3.Distance(currentPos, targetPos);
+
+    if (distance < 1.0) {
+      this.targetVelocity.setAll(0);
+      this.stopNavMovement();
+      this.resetNavState();
+      this.reconTimer += deltaTime;
+      if (!this.animationController.isInState(AnimationState.IDLE)) {
+        this.animationController.transition(AnimationState.IDLE);
+      }
+      if (this.reconTimer >= this.reconDuration) {
+        const finishedOrder = this.currentOrder;
+        this.orderState = OrderExecutionState.COMPLETED;
+        this.currentOrder = null;
+        this.completedOrder = finishedOrder;
+        this.reconTimer = 0;
+      }
+      return;
+    }
+
+    this.reconTimer = 0;
+    this.moveWithNavigation(targetPos, deltaTime, 0.7);
   }
 
-  private executeAttack(deltaTime: number): void {
-    // Move toward target and engage
-    if (this.currentOrder?.target) {
-      const targetPos = this.currentOrder.target;
-      const navTarget = this.resolveNavTarget(targetPos);
-      const currentPos = this.getPosition();
-      const distance = Vector3.Distance(currentPos, navTarget);
-
-      if (distance < 10.0) {
-        // In range - attack
-        this.targetVelocity.setAll(0);
-        this.stopNavMovement();
-        this.rotateToward(targetPos, deltaTime);
-        // Periodic shooting would be handled here
-      } else {
-        this.moveWithNavigation(navTarget, deltaTime);
-      }
+  private executeSecure(deltaTime: number): void {
+    if (!this.currentOrder?.target) {
+      this.orderState = OrderExecutionState.FAILED;
+      return;
     }
+
+    this.orderState = OrderExecutionState.EXECUTING;
+    const targetPos = this.resolveNavTarget(this.currentOrder.target);
+    const currentPos = this.getPosition();
+    const distance = Vector3.Distance(currentPos, targetPos);
+
+    if (distance < 1.0) {
+      this.targetVelocity.setAll(0);
+      this.stopNavMovement();
+      this.resetNavState();
+      if (!this.stats.isInCover) {
+        this.stats.isInCover = true;
+        this.animationController.transition(AnimationState.COVER);
+      }
+      const finishedOrder = this.currentOrder;
+      this.orderState = OrderExecutionState.COMPLETED;
+      this.currentOrder = null;
+      this.completedOrder = finishedOrder;
+      return;
+    }
+
+    this.moveWithNavigation(targetPos, deltaTime);
+  }
+
+  private executePatrol(deltaTime: number): void {
+    if (!this.currentOrder?.target) {
+      this.orderState = OrderExecutionState.FAILED;
+      return;
+    }
+
+    this.orderState = OrderExecutionState.EXECUTING;
+
+    if (!this.patrolCenter || Vector3.DistanceSquared(this.patrolCenter, this.currentOrder.target) > 0.1) {
+      this.initializePatrolRoute(this.currentOrder.target);
+    }
+
+    if (this.patrolWaypoints.length === 0) {
+      return;
+    }
+
+    const waypoint = this.patrolWaypoints[this.patrolWaypointIndex];
+    const currentPos = this.getPosition();
+    const distance = Vector3.Distance(currentPos, waypoint);
+
+    if (distance < this.patrolWaypointThreshold) {
+      this.patrolWaypointIndex = (this.patrolWaypointIndex + 1) % this.patrolWaypoints.length;
+    }
+
+    this.moveWithNavigation(waypoint, deltaTime, 0.8);
+  }
+
+  private initializePatrolRoute(center: Vector3): void {
+    this.patrolCenter = center.clone();
+    this.patrolWaypoints = [];
+    for (let i = 0; i < 4; i++) {
+      const angle = (Math.PI * 2 * i) / 4;
+      const x = center.x + Math.cos(angle) * this.patrolRadius;
+      const z = center.z + Math.sin(angle) * this.patrolRadius;
+      this.patrolWaypoints.push(new Vector3(x, center.y, z));
+    }
+    this.patrolWaypointIndex = 0;
   }
 
   /**
@@ -505,18 +607,22 @@ export class SquadMember extends Unit {
 
   private updateNavSpeed(speedMultiplier: number): void {
     if (!this.canUseNavAgent()) return;
+    const nav = this.navigationSystem;
+    if (!nav) return;
 
     const desiredSpeed = this.stats.moveSpeed * speedMultiplier;
     if (this.lastNavSpeed === null || Math.abs(desiredSpeed - this.lastNavSpeed) > 0.05) {
-      this.navigationSystem.updateAgentParameters(this.agentIndex, { maxSpeed: desiredSpeed });
+      nav.updateAgentParameters(this.agentIndex, { maxSpeed: desiredSpeed });
       this.lastNavSpeed = desiredSpeed;
     }
   }
 
   private stopNavMovement(): void {
     if (!this.canUseNavAgent()) return;
+    const nav = this.navigationSystem;
+    if (!nav) return;
     const currentPos = this.getPosition();
-    this.navigationSystem.agentTeleport(this.agentIndex, currentPos);
+    nav.agentTeleport(this.agentIndex, currentPos);
   }
 
   private syncCollisionMesh(): void {
@@ -528,8 +634,10 @@ export class SquadMember extends Unit {
 
   private updateNavRotation(deltaTime: number): void {
     if (!this.canUseNavAgent()) return;
+    const nav = this.navigationSystem;
+    if (!nav) return;
 
-    const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+    const velocity = nav.getAgentVelocity(this.agentIndex);
     if (velocity.length() > 0.05) {
       const targetRotation = Math.atan2(velocity.x, velocity.z);
       this.alignToRotation(targetRotation, deltaTime);
@@ -548,6 +656,11 @@ export class SquadMember extends Unit {
       this.moveToward(target, deltaTime, speedMultiplier);
       return;
     }
+    const nav = this.navigationSystem;
+    if (!nav) {
+      this.moveToward(target, deltaTime, speedMultiplier);
+      return;
+    }
 
     this.navMovementRequested = true;
     this.updateNavSpeed(speedMultiplier);
@@ -557,16 +670,16 @@ export class SquadMember extends Unit {
       Vector3.DistanceSquared(this.lastNavTarget, navTarget) > 0.25;
 
     if (targetChanged) {
-      this.navigationSystem.agentGoto(this.agentIndex, navTarget);
+      nav.agentGoto(this.agentIndex, navTarget);
       this.lastNavTarget = navTarget.clone();
       this.navStallTimer = 0;
     } else {
       const distance = Vector3.Distance(this.getPosition(), navTarget);
-      const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+      const velocity = nav.getAgentVelocity(this.agentIndex);
       if (distance > 1.0 && velocity.length() < 0.05) {
         this.navStallTimer += deltaTime;
         if (this.navStallTimer > 0.5) {
-          this.navigationSystem.agentGoto(this.agentIndex, navTarget);
+          nav.agentGoto(this.agentIndex, navTarget);
           this.navStallTimer = 0;
         }
       } else {
@@ -614,6 +727,17 @@ export class SquadMember extends Unit {
     }
 
     this.applyRotation(deltaTime);
+  }
+
+  public takeDamage(amount: number, source?: Vector3): void {
+    if (!this.stats.isAlive) return;
+
+    super.takeDamage(amount);
+
+    if (!this.stats.isAlive) return;
+    if (!source) return;
+    this.lastHitSource = source.clone();
+    this.lastHitTimer = this.hitMemoryDuration;
   }
 
   protected die(): void {
@@ -664,15 +788,16 @@ export class SquadMember extends Unit {
     this.orderState = OrderExecutionState.PENDING;
     this.completedOrder = null;
     this.resetNavState();
+    this.reconTimer = 0;
+    if (order.type !== SquadOrderType.PATROL) {
+      this.patrolWaypoints = [];
+      this.patrolWaypointIndex = 0;
+      this.patrolCenter = null;
+    }
 
-    // Exit cover if moving
-    if (order.type !== SquadOrderType.HOLD && order.type !== SquadOrderType.TAKE_COVER) {
-      if (this.stats.isInCover) {
-        this.stats.isInCover = false;
-        this.animationController.transition(AnimationState.IDLE);
-      }
-    } else {
-      this.stopNavMovement();
+    if (this.stats.isInCover) {
+      this.stats.isInCover = false;
+      this.animationController.transition(AnimationState.IDLE);
     }
   }
 
@@ -689,6 +814,14 @@ export class SquadMember extends Unit {
 
   public getOrderState(): OrderExecutionState {
     return this.orderState;
+  }
+
+  public consumeHitSource(): Vector3 | null {
+    if (!this.lastHitSource) return null;
+    const source = this.lastHitSource.clone();
+    this.lastHitSource = null;
+    this.lastHitTimer = 0;
+    return source;
   }
 
   public consumeCompletedOrder(): SquadOrder | null {
@@ -723,7 +856,10 @@ export class SquadMember extends Unit {
     if (this.isPlayerControlled) return UnitStatus.ACTIVE;
     if (this.stats.isInCover) return UnitStatus.IN_COVER;
     if (this.stats.health < this.stats.maxHealth * 0.5) return UnitStatus.WOUNDED;
-    if (this.currentOrder) return UnitStatus.MOVING;
+    if (this.currentOrder) {
+      if (this.currentOrder.type === SquadOrderType.ENGAGE) return UnitStatus.ATTACKING;
+      return UnitStatus.MOVING;
+    }
     return UnitStatus.IDLE;
   }
 

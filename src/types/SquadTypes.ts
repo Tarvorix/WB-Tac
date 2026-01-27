@@ -22,12 +22,11 @@ export interface SquadMemberConfig {
 
 // Order types for squad commands
 export enum SquadOrderType {
-  ADVANCE = 'advance',
+  ENGAGE = 'engage',
   FALLBACK = 'fallback',
-  HOLD = 'hold',
-  ATTACK = 'attack',
-  FOLLOW = 'follow',
-  TAKE_COVER = 'takeCover'
+  RECON = 'recon',
+  SECURE = 'secure',
+  PATROL = 'patrol'
 }
 
 // Order execution states

@@ -221,10 +221,11 @@ export class SquadPanel {
 
   private createOrderButtons(): void {
     const orders: { type: SquadOrderType; label: string; color: string }[] = [
-      { type: SquadOrderType.FOLLOW, label: 'FORM', color: 'rgba(100, 100, 100, 0.8)' },
-      { type: SquadOrderType.HOLD, label: 'HOLD', color: 'rgba(0, 100, 200, 0.8)' },
-      { type: SquadOrderType.ADVANCE, label: 'ADV', color: 'rgba(0, 150, 0, 0.8)' },
-      { type: SquadOrderType.TAKE_COVER, label: 'CVR', color: 'rgba(150, 100, 0, 0.8)' }
+      { type: SquadOrderType.ENGAGE, label: 'ENG', color: 'rgba(170, 40, 40, 0.85)' },
+      { type: SquadOrderType.FALLBACK, label: 'FBK', color: 'rgba(90, 90, 90, 0.85)' },
+      { type: SquadOrderType.RECON, label: 'RCN', color: 'rgba(40, 120, 200, 0.85)' },
+      { type: SquadOrderType.SECURE, label: 'SEC', color: 'rgba(40, 160, 80, 0.85)' },
+      { type: SquadOrderType.PATROL, label: 'PTR', color: 'rgba(140, 100, 40, 0.85)' }
     ];
 
     const buttonWidth = this.isMobile ? 45 : 55;
@@ -267,8 +268,10 @@ export class SquadPanel {
     buttonsGrid.width = '100%';
     buttonsGrid.height = '100%';
     buttonsGrid.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
-    buttonsGrid.addRowDefinition(buttonHeight, true);
-    buttonsGrid.addRowDefinition(buttonHeight, true);
+    const rowCount = Math.ceil(orders.length / 2);
+    for (let i = 0; i < rowCount; i++) {
+      buttonsGrid.addRowDefinition(buttonHeight, true);
+    }
     buttonsGrid.addColumnDefinition(buttonWidth, true);
     buttonsGrid.addColumnDefinition(buttonWidth, true);
     layoutGrid.addControl(buttonsGrid, 1, 0);
@@ -438,6 +441,7 @@ export class SquadPanel {
     } else {
       this.squadManager.issueOrderToAll(orderType);
     }
+    this.squadManager.setLastOrderType(orderType);
 
     // Visual feedback
     console.log(`Order issued: ${orderType.toUpperCase()}`);

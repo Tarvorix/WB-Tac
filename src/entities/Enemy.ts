@@ -10,6 +10,7 @@ import { AssetLoader } from '../core/AssetLoader';
 import { EnemyAnimationController } from './EnemyAnimationController';
 import { AnimationState } from '../types/AnimationTypes';
 import { NavigationSystem } from '../systems/NavigationSystem';
+import { MuzzleFlash } from '../effects/MuzzleFlash';
 
 export class Enemy {
   private scene: Scene;
@@ -19,6 +20,7 @@ export class Enemy {
 
   private rootNode: TransformNode;
   private animationController: EnemyAnimationController;
+  private muzzleFlash: MuzzleFlash | null = null;
   private collisionMesh: Mesh | null = null;
   private meshes: AbstractMesh[] = [];
 
@@ -26,6 +28,9 @@ export class Enemy {
   private maxHealth: number = 100;
   private isAlive: boolean = true;
   private spawnPosition: Vector3;
+
+  private fireCooldown: number = 0;
+  private readonly fireInterval: number = 0.8;
 
   private onDeathCallback: (() => void) | null = null;
 
@@ -47,6 +52,14 @@ export class Enemy {
   private wanderWaitTime: number = 0;
   private readonly WANDER_MIN_WAIT: number = 1.0;  // Min seconds to wait at destination
   private readonly WANDER_MAX_WAIT: number = 3.0;  // Max seconds to wait at destination
+
+  // Combat behavior
+  private combatTarget: Vector3 | null = null;
+  private isEngaging: boolean = false;
+  private engageRepathTimer: number = 0;
+  private readonly ENGAGE_REPATH_INTERVAL: number = 0.5;
+  private readonly ENGAGE_RANGE: number = 12;
+  private readonly ATTACK_RANGE: number = 8;
 
   constructor(scene: Scene, assetLoader: AssetLoader, name: string, index: number) {
     this.scene = scene;
@@ -80,6 +93,7 @@ export class Enemy {
     }
 
     this.setupCollisionMesh();
+    this.muzzleFlash = new MuzzleFlash(this.scene, this.rootNode);
   }
 
   private setupCollisionMesh(): void {
@@ -190,6 +204,32 @@ export class Enemy {
     this.animationController.transition(AnimationState.IDLE);
   }
 
+  public setCombatTarget(target: Vector3): void {
+    this.combatTarget = target.clone();
+    this.isEngaging = true;
+    this.isPatrolling = false;
+    this.isWandering = false;
+    this.wanderWaitTime = 0;
+    this.engageRepathTimer = 0;
+  }
+
+  public clearCombatTarget(): void {
+    this.isEngaging = false;
+    this.combatTarget = null;
+  }
+
+  public isEngagingTarget(): boolean {
+    return this.isEngaging;
+  }
+
+  public isPatrollingActive(): boolean {
+    return this.isPatrolling;
+  }
+
+  public isWanderingActive(): boolean {
+    return this.isWandering;
+  }
+
   /**
    * Start random wandering behavior within a radius of a center point
    */
@@ -242,11 +282,15 @@ export class Enemy {
     return this.maxHealth;
   }
 
+  public getAttackRange(): number {
+    return this.ATTACK_RANGE;
+  }
+
   public isEnemyAlive(): boolean {
     return this.isAlive;
   }
 
-  public takeDamage(amount: number): void {
+  public takeDamage(amount: number, _source?: Vector3): void {
     if (!this.isAlive) return;
 
     this.health = Math.max(0, this.health - amount);
@@ -254,6 +298,18 @@ export class Enemy {
     if (this.health <= 0) {
       this.die();
     }
+  }
+
+  public tryShoot(): boolean {
+    if (!this.isAlive) return false;
+    if (this.fireCooldown > 0) return false;
+
+    this.fireCooldown = this.fireInterval;
+    if (this.muzzleFlash) {
+      this.muzzleFlash.trigger();
+    }
+    this.animationController.playOnce(AnimationState.SHOOT);
+    return true;
   }
 
   public onDeath(callback: () => void): void {
@@ -301,36 +357,44 @@ export class Enemy {
   }
 
   public update(deltaTime: number): void {
+    if (this.fireCooldown > 0) {
+      this.fireCooldown = Math.max(0, this.fireCooldown - deltaTime);
+    }
+
     // Update rotation based on agent velocity (for smooth turning)
     if (this.isAlive && this.navigationSystem && this.agentIndex >= 0) {
       // Force Y to ground level (navmesh may have slight height offset)
       this.rootNode.position.y = 0;
 
-      const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
-      const isMoving = velocity.length() > 0.2;
+      if (this.isEngaging && this.combatTarget) {
+        this.updateEngagement(deltaTime);
+      } else if (this.isPatrolling) {
+        const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+        const isMoving = velocity.length() > 0.2;
 
-      if (isMoving) {
-        // Agent is moving - update rotation to face movement direction
-        const targetRotation = Math.atan2(velocity.x, velocity.z);
+        if (isMoving) {
+          // Agent is moving - update rotation to face movement direction
+          const targetRotation = Math.atan2(velocity.x, velocity.z);
 
-        // Smooth rotation
-        let currentRotation = this.rootNode.rotation.y;
-        let rotationDiff = targetRotation - currentRotation;
+          // Smooth rotation
+          let currentRotation = this.rootNode.rotation.y;
+          let rotationDiff = targetRotation - currentRotation;
 
-        // Normalize angle difference to [-PI, PI]
-        while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
-        while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
+          // Normalize angle difference to [-PI, PI]
+          while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
+          while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
 
-        this.rootNode.rotation.y = currentRotation + rotationDiff * this.ROTATION_SMOOTHING;
+          this.rootNode.rotation.y = currentRotation + rotationDiff * this.ROTATION_SMOOTHING;
 
-        // Ensure walk animation is playing while moving
-        if ((this.isPatrolling || this.isWandering) && !this.animationController.isInState(AnimationState.WALK)) {
-          this.animationController.transition(AnimationState.WALK);
+          // Ensure walk animation is playing while moving
+          if (!this.animationController.isInState(AnimationState.WALK)) {
+            this.animationController.transition(AnimationState.WALK);
+          }
+
+          // Reset wander wait time when moving
+          this.wanderWaitTime = 0;
         }
 
-        // Reset wander wait time when moving
-        this.wanderWaitTime = 0;
-      } else if (this.isPatrolling) {
         // Agent stopped but patrolling - check if we need to go to next waypoint
         const currentPos = this.rootNode.position;
         const targetWaypoint = this.patrolWaypoints[
@@ -346,6 +410,26 @@ export class Enemy {
           this.goToNextWaypoint();
         }
       } else if (this.isWandering) {
+        const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+        const isMoving = velocity.length() > 0.2;
+
+        if (isMoving) {
+          const targetRotation = Math.atan2(velocity.x, velocity.z);
+          let currentRotation = this.rootNode.rotation.y;
+          let rotationDiff = targetRotation - currentRotation;
+
+          while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
+          while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
+
+          this.rootNode.rotation.y = currentRotation + rotationDiff * this.ROTATION_SMOOTHING;
+
+          if (!this.animationController.isInState(AnimationState.WALK)) {
+            this.animationController.transition(AnimationState.WALK);
+          }
+          this.wanderWaitTime = 0;
+          return;
+        }
+
         // Agent stopped while wandering - wait then pick new destination
         this.wanderWaitTime += deltaTime;
 
@@ -367,6 +451,61 @@ export class Enemy {
     this.animationController.update(deltaTime);
   }
 
+  private updateEngagement(deltaTime: number): void {
+    if (!this.navigationSystem || this.agentIndex < 0 || !this.combatTarget) return;
+
+    const currentPos = this.rootNode.position;
+    const distance = Vector3.Distance(currentPos, this.combatTarget);
+
+    if (distance > this.ATTACK_RANGE) {
+      this.engageRepathTimer += deltaTime;
+      if (this.engageRepathTimer >= this.ENGAGE_REPATH_INTERVAL) {
+        const navTarget = this.navigationSystem.getClosestPoint(this.combatTarget) || this.combatTarget;
+        this.navigationSystem.agentGoto(this.agentIndex, navTarget);
+        this.engageRepathTimer = 0;
+      }
+
+      const velocity = this.navigationSystem.getAgentVelocity(this.agentIndex);
+      if (velocity.length() > 0.2) {
+        const targetRotation = Math.atan2(velocity.x, velocity.z);
+        let currentRotation = this.rootNode.rotation.y;
+        let rotationDiff = targetRotation - currentRotation;
+
+        while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
+        while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
+
+        this.rootNode.rotation.y = currentRotation + rotationDiff * this.ROTATION_SMOOTHING;
+      }
+
+      if (!this.animationController.isInState(AnimationState.WALK)) {
+        this.animationController.transition(AnimationState.WALK);
+      }
+      return;
+    }
+
+    // In attack range: stop movement and face target
+    this.navigationSystem.agentTeleport(this.agentIndex, currentPos);
+
+    const direction = this.combatTarget.subtract(currentPos);
+    direction.y = 0;
+    if (direction.length() > 0.1) {
+      direction.normalize();
+      const targetRotation = Math.atan2(direction.x, direction.z);
+      let currentRotation = this.rootNode.rotation.y;
+      let rotationDiff = targetRotation - currentRotation;
+
+      while (rotationDiff > Math.PI) rotationDiff -= Math.PI * 2;
+      while (rotationDiff < -Math.PI) rotationDiff += Math.PI * 2;
+
+      this.rootNode.rotation.y = currentRotation + rotationDiff * this.ROTATION_SMOOTHING;
+    }
+
+    if (!this.animationController.isInState(AnimationState.IDLE) &&
+        !this.animationController.isInState(AnimationState.SHOOT)) {
+      this.animationController.transition(AnimationState.IDLE);
+    }
+  }
+
   public dispose(): void {
     // Remove from navigation crowd before disposing
     if (this.navigationSystem && this.agentIndex >= 0) {
@@ -377,6 +516,10 @@ export class Enemy {
     if (this.collisionMesh) {
       this.collisionMesh.dispose();
       this.collisionMesh = null;
+    }
+    if (this.muzzleFlash) {
+      this.muzzleFlash.dispose();
+      this.muzzleFlash = null;
     }
     this.animationController.dispose();
     this.rootNode.dispose();

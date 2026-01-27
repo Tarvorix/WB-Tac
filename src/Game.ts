@@ -13,6 +13,7 @@ import {
   Texture,
   AbstractMesh,
   Mesh,
+  ArcRotateCameraPointersInput,
   PointerEventTypes,
   KeyboardEventTypes,
   Matrix
@@ -32,6 +33,8 @@ import { SquadPanel } from './ui/SquadPanel';
 import { GAME_CONSTANTS, ASSET_PATHS, REBEL_ASSET_PATHS } from './utils/Constants';
 import { CoverLevel } from './types/GameTypes';
 import { SquadOrderType } from './types/SquadTypes';
+import { SquadAIController } from './ai/SquadAIController';
+import { EnemyAIController } from './ai/EnemyAIController';
 
 export class Game {
   private engineWrapper: EngineWrapper;
@@ -41,10 +44,12 @@ export class Game {
   private inputManager: InputManager | null = null;
   private player: Character | null = null;
   private squadManager: SquadManager | null = null;
+  private squadAIController: SquadAIController | null = null;
   private squadPanel: SquadPanel | null = null;
   private coverSystem: CoverSystem | null = null;
   private shadowGenerator: ShadowGenerator | null = null;
   private navigationSystem: NavigationSystem | null = null;
+  private enemyAIController: EnemyAIController | null = null;
 
   // Meshes for navigation mesh generation
   private navMeshSources: Mesh[] = [];
@@ -86,6 +91,7 @@ export class Game {
 
     this.scene = this.engineWrapper.createScene();
     this.assetLoader = new AssetLoader(this.scene);
+    this.enemyAIController = new EnemyAIController();
   }
 
   public onLoadProgress(callback: (progress: LoadProgress) => void): void {
@@ -752,6 +758,16 @@ export class Game {
     const squadSpawnPosition = new Vector3(5, 0, 5);
     await this.squadManager.createSquad(squadSpawnPosition);
 
+    this.squadAIController = new SquadAIController(this.squadManager);
+    this.squadManager.setOrderHandler({
+      setOrder: (orderType, target, memberId) => {
+        this.squadAIController?.setOrder(orderType, target, memberId);
+      },
+      clearOrders: () => {
+        this.squadAIController?.clearOrders();
+      }
+    });
+
     // Add shadow casters for all squad members
     if (this.shadowGenerator) {
       const meshes = this.squadManager.getAllMeshes();
@@ -832,7 +848,7 @@ export class Game {
     planningCamera.inputs.clear();
     planningCamera.inputs.addPointers();
     planningCamera.inputs.addMouseWheel();
-    const pointerInput = planningCamera.inputs.attached.pointers;
+    const pointerInput = planningCamera.inputs.attached.pointers as ArcRotateCameraPointersInput | undefined;
     if (pointerInput) {
       // Allow touch gestures while keeping right-drag for panning; left stays for orders.
       pointerInput.buttons = [0, 2];
@@ -870,7 +886,7 @@ export class Game {
     const target = new Vector3(center.x, 0, center.z);
     this.planningFitTarget = target;
 
-    const minRadius = GAME_CONSTANTS.CAMERA_PLANNING_ARC_MIN_RADIUS;
+    const minRadius = Number(GAME_CONSTANTS.CAMERA_PLANNING_ARC_MIN_RADIUS);
     const extents = bounds.max.subtract(bounds.min);
     const mapDiagonal = Math.sqrt(extents.x * extents.x + extents.z * extents.z);
     const maxRadius = Math.max(GAME_CONSTANTS.CAMERA_PLANNING_ARC_MAX_RADIUS, mapDiagonal * 4);
@@ -920,7 +936,7 @@ export class Game {
 
     camera.radius = radius;
     camera.setTarget(target);
-    camera.computeWorldMatrix(true);
+    camera.computeWorldMatrix();
 
     const corners = [
       { x: 0, y: 0 },
@@ -1015,7 +1031,7 @@ export class Game {
         if (pickInfo.pickedMesh.metadata.type !== 'ground') return;
 
         this.isOrderDragActive = true;
-        this.orderDragPointerId = event.pointerId ?? null;
+        this.orderDragPointerId = event ? event.pointerId : null;
         this.orderDragTarget = pickInfo.pickedPoint.clone();
         this.orderDragMemberId = selectedMemberId;
         this.updatePlanningIndicators(this.orderDragTarget, this.squadManager.getMember(selectedMemberId) || null);
@@ -1036,9 +1052,10 @@ export class Game {
         if (this.orderDragPointerId !== null && event && event.pointerId !== this.orderDragPointerId) return;
 
         if (this.orderDragMemberId && this.orderDragTarget) {
+          const orderType = this.squadManager?.getLastOrderType() ?? SquadOrderType.SECURE;
           this.squadManager.issueOrderToMember(
             this.orderDragMemberId,
-            SquadOrderType.ADVANCE,
+            orderType,
             this.orderDragTarget
           );
           this.planningIndicatorMemberId = this.orderDragMemberId;
@@ -1058,7 +1075,8 @@ export class Game {
         const key = kbInfo.event.key;
 
         if (key === 'Alt') {
-          if (!kbInfo.event.repeat) {
+          const keyboardEvent = kbInfo.event as KeyboardEvent;
+          if (!keyboardEvent.repeat) {
             this.isPlanningToggleActive = !this.isPlanningToggleActive;
             this.updatePlanningMode();
           }
@@ -1078,17 +1096,25 @@ export class Game {
         // Order shortcuts (when not typing)
         if (this.squadManager) {
           switch (key.toLowerCase()) {
-            case 'h': // Hold
-              this.squadManager.issueOrderToAll(SquadOrderType.HOLD);
-              console.log('Squad: HOLD position');
+            case 'e': // Engage
+              this.squadManager.issueOrderToAll(SquadOrderType.ENGAGE);
+              console.log('Squad: ENGAGE');
               break;
-            case 'g': // Follow/Regroup
-              this.squadManager.issueOrderToAll(SquadOrderType.FOLLOW);
-              console.log('Squad: FOLLOW leader');
+            case 'r': // Recon
+              this.squadManager.issueOrderToAll(SquadOrderType.RECON);
+              console.log('Squad: RECON');
               break;
-            case 'c': // Take cover
-              this.squadManager.issueOrderToAll(SquadOrderType.TAKE_COVER);
-              console.log('Squad: TAKE COVER');
+            case 's': // Secure
+              this.squadManager.issueOrderToAll(SquadOrderType.SECURE);
+              console.log('Squad: SECURE');
+              break;
+            case 'p': // Patrol
+              this.squadManager.issueOrderToAll(SquadOrderType.PATROL);
+              console.log('Squad: PATROL');
+              break;
+            case 'b': // Fallback
+              this.squadManager.issueOrderToAll(SquadOrderType.FALLBACK);
+              console.log('Squad: FALLBACK');
               break;
           }
         }
@@ -1131,7 +1157,7 @@ export class Game {
         );
       }
       this.updatePlanningPanState();
-      this.planningCamera.attachControl(this.engineWrapper.getCanvas(), false, false, 2);
+      this.planningCamera.attachControl(false, false, 2);
       this.scene.activeCamera = this.planningCamera;
     }
 
@@ -1411,10 +1437,16 @@ export class Game {
 
     // Update squad
     if (this.squadManager) {
+      if (this.squadAIController) {
+        this.squadAIController.update(deltaTime, this.enemies);
+      }
       this.squadManager.update(deltaTime);
     }
 
     // Update enemies
+    if (this.enemyAIController && this.squadManager) {
+      this.enemyAIController.update(deltaTime, this.enemies, this.squadManager.getAliveMembers());
+    }
     for (const enemy of this.enemies) {
       enemy.update(deltaTime);
     }
